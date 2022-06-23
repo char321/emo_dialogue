@@ -34,8 +34,8 @@ class MatchingAttention(nn.Module):
         alpha_dim = d_a ?
         '''
 
-        assert att_type != 'concat' or alpha_dim != None
-        assert att_type != 'dot' or mem_dim == cand_dim
+        assert att_type != 'concat' or alpha_dim != None # when att_type == 'concat', alpha_dim must != None
+        assert att_type != 'dot' or mem_dim == cand_dim # when att_type == 'dot', mem_dim must == cand_dim
 
         self.mem_dim = mem_dim
         self.cand_dim = cand_dim
@@ -43,14 +43,14 @@ class MatchingAttention(nn.Module):
 
         if att_type == 'general':
             # no bias
-            self.transform = nn.Linear(cand_dim, mem_dim, bias=False)
+            self.transform_no_bias = nn.Linear(cand_dim, mem_dim, bias=False)
         if att_type == 'general2':
             # with bias
-            self.transform = nn.Linear(cand_dim, mem_dim, bias=True)
+            self.transform_with_bias = nn.Linear(cand_dim, mem_dim, bias=True)
             # torch.nn.init.normal_(self.transform.weight,std=0.01)
         elif att_type == 'concat':
-            self.transform = nn.Linear(cand_dim + mem_dim, alpha_dim, bias=False)
-            self.vector_prod = nn.Linear(alpha_dim, 1, bias=False)
+            self.transform_concat = nn.Linear(cand_dim + mem_dim, alpha_dim, bias=False)
+            self.linear = nn.Linear(alpha_dim, 1, bias=False)
 
     def forward(self, M, x, mask=None):
         """
@@ -64,32 +64,35 @@ class MatchingAttention(nn.Module):
 
         if self.att_type == 'dot':
             # dot attention
-            # vector = cand_dim = mem_dim
-            M_ = M.permute(1, 2, 0)  # batch * vector * seq_len
-            x_ = x.unsqueeze(1)  # batch * 1 * vector
+            # d_g == d_m
+            M_ = M.permute(1, 2, 0)  # batch * d_g * seq_len
+            x_ = x.unsqueeze(1)  # batch * 1 * d_m
             alpha = F.softmax(torch.bmm(x_, M_), dim=2)  # batch * 1 * seq_len
 
         elif self.att_type == 'general':
-            M_ = M.permute(1, 2, 0)  # batch * mem_dim * seq_len
-            x_ = self.transform(x).unsqueeze(1)  # batch * 1 * mem_dim
+            # general attention
+            M_ = M.permute(1, 2, 0)  # batch * d_g * seq_len
+            x_ = self.transform_no_bias(x).unsqueeze(1)  # batch * 1 * d_g
             alpha = F.softmax(torch.bmm(x_, M_), dim=2)  # batch * 1 * seq_len
 
         elif self.att_type == 'general2':
-            M_ = M.permute(1, 2, 0)  # batch * mem_dim * seq_len
-            x_ = self.transform(x).unsqueeze(1)  # batch * 1 * mem_dim
+            # masked attention
+            M_ = M.permute(1, 2, 0)  # batch * d_g * seq_len
+            x_ = self.transform_with_bias(x).unsqueeze(1)  # batch * 1 * d_g
             alpha_ = F.softmax((torch.bmm(x_, M_)) * mask.unsqueeze(1), dim=2)  # batch * 1 * seq_len
-            alpha_masked = alpha_ * mask.unsqueeze(1)  # batch, 1, seq_len
-            alpha_sum = torch.sum(alpha_masked, dim=2, keepdim=True)  # batch, 1, 1
-            alpha = alpha_masked / alpha_sum  # batch, 1, 1 ; normalized
+            alpha_masked = alpha_ * mask.unsqueeze(1)  # batch * 1 * seq_len
+            alpha_sum = torch.sum(alpha_masked, dim=2, keepdim=True)  # batch * 1 * 1
+            alpha = alpha_masked / alpha_sum  # normalization -> batch * 1 * seq_len
             # import ipdb;ipdb.set_trace()
         else:
-            M_ = M.transpose(0, 1)  # batch, seqlen, mem_dim
-            x_ = x.unsqueeze(1).expand(-1, M.size()[0], -1)  # batch, seqlen, cand_dim
-            M_x_ = torch.cat([M_, x_], 2)  # batch, seqlen, mem_dim+cand_dim
-            mx_a = F.tanh(self.transform(M_x_))  # batch, seqlen, alpha_dim
-            alpha = F.softmax(self.vector_prod(mx_a), 1).transpose(1, 2)  # batch, 1, seqlen
+            # concatenation
+            M_ = M.transpose(0, 1)  # batch * seq_len * d_g
+            x_ = x.unsqueeze(1).expand(-1, M.size()[0], -1)  # expand the dim: batch * seq_len * d_m
+            M_x_ = torch.cat([M_, x_], 2)  # batch * seq_len * (d_g + d_m)
+            mx_a = F.tanh(self.transform_concat(M_x_))  # batch * seq_len * alpha_dim
+            alpha = F.softmax(self.linear(mx_a), 1).transpose(1, 2)  # batch * 1 * seq_len
 
-        attn_pool = torch.bmm(alpha, M.transpose(0, 1))[:, 0, :]  # batch, mem_dim
+        attn_pool = torch.bmm(alpha, M.transpose(0, 1))[:, 0, :]  # batch * d_g
 
         return attn_pool, alpha
 
@@ -112,7 +115,7 @@ class DialogueRNNCell(nn.Module):
         self.p_cell = nn.GRUCell(D_m + D_g, D_p)
         # emotion representation - infer from the speaker state
         self.e_cell = nn.GRUCell(D_p, D_e)
-        # party state (listerner update), which is unnecessary
+        # party state (listener update), which is unnecessary
         if listener_state:
             self.l_cell = nn.GRUCell(D_m + D_p, D_p)
 
@@ -124,23 +127,27 @@ class DialogueRNNCell(nn.Module):
         else:
             self.attention = MatchingAttention(D_g, D_m, D_a, context_attention)
 
-    def _select_parties(self, X, indices):
-        q0_sel = []
-        for idx, j in zip(indices, X):
-            q0_sel.append(j[idx].unsqueeze(0))
-        q0_sel = torch.cat(q0_sel, 0)
-        return q0_sel
+    def _select_parties(self, q, indices):
+        '''
+        q: party state
+        indices: max indices of party state mask for each batch
+        '''
+        q_sel = []
+        for idx, j in zip(indices, q):
+            q_sel.append(j[idx].unsqueeze(0))
+        q_sel = torch.cat(q_sel, 0)
+        return q_sel
 
     def forward(self, U, qmask, g_hist, q0, e0):
         """
-        U -> batch, D_m
-        qmask -> batch, party
-        g_hist -> t-1, batch, D_g
-        q0 -> batch, party, D_p
-        e0 -> batch, self.D_e
+        U: utterances -> (batch, D_m)
+        qmask: party state mask -> (seq_len, batch, party)
+        g_hist: previous global state -> (t-1, batch, D_g)
+        q0: initial? party state -> (batch, party, D_p)
+        e0: initial? emotion representation -> (batch, self.D_e)
         """
-        qm_idx = torch.argmax(qmask, 1)
-        q0_sel = self._select_parties(q0, qm_idx)
+        qm_idx = torch.argmax(qmask, 1)  # max idx of qmax (for each batch)
+        q0_sel = self._select_parties(q0, qm_idx)  # 1 * batch
 
         g_ = self.g_cell(torch.cat([U, q0_sel], dim=1),
                          torch.zeros(U.size()[0], self.D_g).type(U.type()) if g_hist.size()[0] == 0 else
