@@ -11,14 +11,14 @@ class SimpleAttention(nn.Module):
         self.input_dim = input_dim
         self.scalar = nn.Linear(self.input_dim, 1, bias=False)
 
-    def forward(self, M, x=None):
+    def forward(self, g_hist, utter=None):
         """
-        M -> (seq_len, batch, vector)
-        x -> dummy argument for the compatibility with MatchingAttention
+        g_hist: (seq_len, batch, vector)
+        utter: dummy argument for the compatibility with MatchingAttention
         """
-        scale = self.scalar(M)  # seq_len * batch * vector -> seq_len * batch * 1
+        scale = self.scalar(g_hist)  # seq_len * batch * vector -> seq_len * batch * 1
         alpha = F.softmax(scale, dim=0).permute(1, 2, 0)  # batch * 1 * seq_len
-        attn_pool = torch.bmm(alpha, M.transpose(0, 1))[:, 0,
+        attn_pool = torch.bmm(alpha, g_hist.transpose(0, 1))[:, 0,
                     :]  # batch * (1 * seq_len) X batch * (seq_len * vector) -> batch * vector
 
         return attn_pool, alpha
@@ -27,15 +27,15 @@ class SimpleAttention(nn.Module):
 class MatchingAttention(nn.Module):
 
     def __init__(self, mem_dim, cand_dim, alpha_dim=None, att_type='general'):
+        """
+        mem_dim: d_g - dim of global state
+        cand_dim: d_m - dim of utterance representation
+        alpha_dim: d_a ?
+        """
         super(MatchingAttention, self).__init__()
-        '''
-        mem_dim = d_g - dim of global state
-        cand_dim = d_m - dim of utterance representation
-        alpha_dim = d_a ?
-        '''
 
-        assert att_type != 'concat' or alpha_dim != None # when att_type == 'concat', alpha_dim must != None
-        assert att_type != 'dot' or mem_dim == cand_dim # when att_type == 'dot', mem_dim must == cand_dim
+        assert att_type != 'concat' or alpha_dim != None  # when att_type == 'concat', alpha_dim must != None
+        assert att_type != 'dot' or mem_dim == cand_dim  # when att_type == 'dot', mem_dim must == cand_dim
 
         self.mem_dim = mem_dim
         self.cand_dim = cand_dim
@@ -52,174 +52,214 @@ class MatchingAttention(nn.Module):
             self.transform_concat = nn.Linear(cand_dim + mem_dim, alpha_dim, bias=False)
             self.linear = nn.Linear(alpha_dim, 1, bias=False)
 
-    def forward(self, M, x, mask=None):
+    def forward(self, g_hist, utter, mask=None):
         """
-        M -> (seq_len, batch, mem_dim)
-        x -> (batch, cand_dim)
-        mask -> (batch, seq_len)
+        attention score over previous global state
+        g_hist: history of global state -> (seq_len, batch, mem_dim), seq_len is time step t
+        utter: utterance -> (batch, cand_dim)
+        mask: (batch, seq_len)
         """
 
         if type(None) == type(mask):
-            mask = torch.ones(M.size(1), M.size(0)).type(M.type())
+            mask = torch.ones(g_hist.size(1), g_hist.size(0)).type(g_hist.type())
 
         if self.att_type == 'dot':
             # dot attention
             # d_g == d_m
-            M_ = M.permute(1, 2, 0)  # batch * d_g * seq_len
-            x_ = x.unsqueeze(1)  # batch * 1 * d_m
-            alpha = F.softmax(torch.bmm(x_, M_), dim=2)  # batch * 1 * seq_len
+            temp_g = g_hist.permute(1, 2, 0)  # batch * d_g * seq_len
+            temp_utter = utter.unsqueeze(1)  # batch * 1 * d_m
+            alpha = F.softmax(torch.bmm(temp_utter, temp_g), dim=2)  # batch * 1 * seq_len
 
         elif self.att_type == 'general':
             # general attention
-            M_ = M.permute(1, 2, 0)  # batch * d_g * seq_len
-            x_ = self.transform_no_bias(x).unsqueeze(1)  # batch * 1 * d_g
-            alpha = F.softmax(torch.bmm(x_, M_), dim=2)  # batch * 1 * seq_len
+            temp_g = g_hist.permute(1, 2, 0)  # batch * d_g * seq_len
+            temp_utter = self.transform_no_bias(utter).unsqueeze(1)  # batch * 1 * d_g
+            alpha = F.softmax(torch.bmm(temp_utter, temp_g), dim=2)  # batch * 1 * seq_len
 
         elif self.att_type == 'general2':
             # masked attention
-            M_ = M.permute(1, 2, 0)  # batch * d_g * seq_len
-            x_ = self.transform_with_bias(x).unsqueeze(1)  # batch * 1 * d_g
-            alpha_ = F.softmax((torch.bmm(x_, M_)) * mask.unsqueeze(1), dim=2)  # batch * 1 * seq_len
+            temp_g = g_hist.permute(1, 2, 0)  # batch * d_g * seq_len
+            temp_utter = self.transform_with_bias(utter).unsqueeze(1)  # batch * 1 * d_g
+            alpha_ = F.softmax((torch.bmm(temp_utter, temp_g)) * mask.unsqueeze(1), dim=2)  # batch * 1 * seq_len
             alpha_masked = alpha_ * mask.unsqueeze(1)  # batch * 1 * seq_len
             alpha_sum = torch.sum(alpha_masked, dim=2, keepdim=True)  # batch * 1 * 1
             alpha = alpha_masked / alpha_sum  # normalization -> batch * 1 * seq_len
             # import ipdb;ipdb.set_trace()
         else:
             # concatenation
-            M_ = M.transpose(0, 1)  # batch * seq_len * d_g
-            x_ = x.unsqueeze(1).expand(-1, M.size()[0], -1)  # expand the dim: batch * seq_len * d_m
-            M_x_ = torch.cat([M_, x_], 2)  # batch * seq_len * (d_g + d_m)
-            mx_a = F.tanh(self.transform_concat(M_x_))  # batch * seq_len * alpha_dim
-            alpha = F.softmax(self.linear(mx_a), 1).transpose(1, 2)  # batch * 1 * seq_len
+            temp_g = g_hist.transpose(0, 1)  # batch * seq_len * d_g
+            temp_utter = utter.unsqueeze(1).expand(-1, g_hist.size()[0], -1)  # expand the dim: batch * seq_len * d_m
+            cat_g_utter = torch.cat([temp_g, temp_utter], 2)  # batch * seq_len * (d_g + d_m)
+            temp_res = F.tanh(self.transform_concat(cat_g_utter))  # batch * seq_len * alpha_dim
+            alpha = F.softmax(self.linear(temp_res), 1).transpose(1, 2)  # batch * 1 * seq_len
 
-        attn_pool = torch.bmm(alpha, M.transpose(0, 1))[:, 0, :]  # batch * d_g
+        attn_pool = torch.bmm(alpha, g_hist.transpose(0, 1))[:, 0, :]  # batch * d_g
 
         return attn_pool, alpha
 
 
 class DialogueRNNCell(nn.Module):
 
-    def __init__(self, D_m, D_g, D_p, D_e, listener_state=False,
-                 context_attention='simple', D_a=100, dropout=0.5):
+    def __init__(self, d_m, d_g, d_p, d_e, listener_state=False,
+                 context_attention='simple', d_a=100, dropout_rate=0.5):
         super(DialogueRNNCell, self).__init__()
 
-        self.D_m = D_m  # dimension of the utterance representation
-        self.D_g = D_g  # dimension of global state
-        self.D_p = D_p  # dimension of party state (speaker update is sufficient)
-        self.D_e = D_e  # dimension of emotion representation
+        self.d_m = d_m  # dimension of the utterance representation - 100
+        self.d_g = d_g  # dimension of global state - 500
+        self.d_p = d_p  # dimension of party state (speaker update is sufficient) - 500
+        self.d_e = d_e  # dimension of emotion representation - 300
 
         self.listener_state = listener_state
         # global state - capture context of a give utterance by jointly encoding utterance & speaker state
-        self.g_cell = nn.GRUCell(D_m + D_p, D_g)
+        self.g_cell = nn.GRUCell(d_m + d_p, d_g)
         # party state (speaker update) - track state of speakers by encoding current utterance & context from global state
-        self.p_cell = nn.GRUCell(D_m + D_g, D_p)
+        self.p_cell = nn.GRUCell(d_m + d_g, d_p)
         # emotion representation - infer from the speaker state
-        self.e_cell = nn.GRUCell(D_p, D_e)
+        self.e_cell = nn.GRUCell(d_p, d_e)
         # party state (listener update), which is unnecessary
         if listener_state:
-            self.l_cell = nn.GRUCell(D_m + D_p, D_p)
+            self.l_cell = nn.GRUCell(d_m + d_p, d_p)
 
-        self.dropout = nn.Dropout(dropout)
+        self.dropout = nn.Dropout(dropout_rate)
 
         # attention score
         if context_attention == 'simple':
-            self.attention = SimpleAttention(D_g)
+            self.attention = SimpleAttention(d_g)
         else:
-            self.attention = MatchingAttention(D_g, D_m, D_a, context_attention)
+            self.attention = MatchingAttention(d_g, d_m, d_a, context_attention)
 
     def _select_parties(self, q, indices):
-        '''
+        """
         q: party state
         indices: max indices of party state mask for each batch
-        '''
+        """
         q_sel = []
         for idx, j in zip(indices, q):
-            q_sel.append(j[idx].unsqueeze(0))
-        q_sel = torch.cat(q_sel, 0)
+            q_sel.append(j[idx].unsqueeze(0))  # get party state whose number is idx
+        q_sel = torch.cat(q_sel, 0)  # concatenates the sequence of tensors
         return q_sel
 
-    def forward(self, U, qmask, g_hist, q0, e0):
+    def forward(self, utter, q_mask, g_hist, q, e):
         """
-        U: utterances -> (batch, D_m)
-        qmask: party state mask -> (seq_len, batch, party)
-        g_hist: previous global state -> (t-1, batch, D_g)
-        q0: initial? party state -> (batch, party, D_p)
-        e0: initial? emotion representation -> (batch, self.D_e)
+        utter: utterances -> (batch, d_m)
+        q_mask: party state mask -> (batch, party) - party = 2
+        g_hist: previous global state -> (t-1, batch, d_g), whose t will increase at each training step
+        q: party state -> (batch, party, d_p)
+        e: emotion representation -> (batch, d_e)
         """
-        qm_idx = torch.argmax(qmask, 1)  # max idx of qmax (for each batch)
-        q0_sel = self._select_parties(q0, qm_idx)  # 1 * batch
+        num_party = q_mask.size()[1]
+        num_batch = q_mask.size()[0]
+        qm_idx = torch.argmax(q_mask, 1)  # max idx of qmax (for each batch), which is batch
+        q0_sel = self._select_parties(q, qm_idx)  # batch * d_p
 
-        g_ = self.g_cell(torch.cat([U, q0_sel], dim=1),
-                         torch.zeros(U.size()[0], self.D_g).type(U.type()) if g_hist.size()[0] == 0 else
-                         g_hist[-1])
-        g_ = self.dropout(g_)
         if g_hist.size()[0] == 0:
-            c_ = torch.zeros(U.size()[0], self.D_g).type(U.type())
+            # first cell in GRU
+            # initialize context vector
+            context = torch.zeros(num_batch, self.d_g).type(utter.type())
             alpha = None
+            hidden = torch.zeros(num_batch, self.d_g).type(utter.type())
         else:
-            c_, alpha = self.attention(g_hist, U)
-        # c_ = torch.zeros(U.size()[0],self.D_g).type(U.type()) if g_hist.size()[0]==0\
-        #         else self.attention(g_hist,U)[0] # batch, D_g
-        U_c_ = torch.cat([U, c_], dim=1).unsqueeze(1).expand(-1, qmask.size()[1], -1)
-        qs_ = self.p_cell(U_c_.contiguous().view(-1, self.D_m + self.D_g),
-                          q0.view(-1, self.D_p)).view(U.size()[0], -1, self.D_p)
-        qs_ = self.dropout(qs_)
+            # get context vector using global state & current utterance through attention mechanism
+            context, alpha = self.attention(g_hist, utter)  # batch * d_g, batch * 1 * seq_len
+            hidden = g_hist[-1]
 
+        # Global state
+        '''
+        input for g_cell:
+        - input: concatenation of utterance and party state -> batch * (d_m + d_p)
+        - hidden: hidden state -> batch * d_g 
+        '''
+        temp_g = self.g_cell(torch.cat([utter, q0_sel], dim=1), hidden)
+        # torch.zeros(utter.size()[0], self.D_g).type(utter.type()) if g_hist.size()[0] == 0 else
+        # g_hist[-1])
+        res_g = self.dropout(temp_g)  # batch * d_g
+
+        # Party state (speaker)
+        temp_utter_context = torch.cat([utter, context], dim=1).unsqueeze(1).expand(-1, num_party, -1)  # batch * party * (d_m + d_g)
+        '''
+        input for p_cell:
+        - input: concatenation of utterance and context vector -> (batch * party) * (d_m + d_g)
+        - hidden: hidden state -> (batch * party) * d_p
+        '''
+        temp_speaker = self.p_cell(temp_utter_context.contiguous().view(-1, self.d_m + self.d_g), q.view(-1, self.d_p))
+        temp_speaker = temp_speaker.view(utter.size()[0], -1, self.d_p)  # batch * party * d_p
+        temp_speaker = self.dropout(temp_speaker)
+
+        # Party state (listener)
         if self.listener_state:
-            U_ = U.unsqueeze(1).expand(-1, qmask.size()[1], -1).contiguous().view(-1, self.D_m)
-            ss_ = self._select_parties(qs_, qm_idx).unsqueeze(1). \
-                expand(-1, qmask.size()[1], -1).contiguous().view(-1, self.D_p)
-            U_ss_ = torch.cat([U_, ss_], 1)
-            ql_ = self.l_cell(U_ss_, q0.view(-1, self.D_p)).view(U.size()[0], -1, self.D_p)
-            ql_ = self.dropout(ql_)
+            temp_utter = utter.unsqueeze(1).expand(-1, num_party, -1).contiguous().view(-1, self.d_m)  # (batch * party) * d_m
+            # select party state of the corresponding party (defined by q_mask)
+            temp_party_state = self._select_parties(temp_speaker, qm_idx).unsqueeze(1).expand(-1, num_party, -1).contiguous().view(-1, self.d_p)  # (batch * party) * d_p
+            temp_utter_party_state = torch.cat([temp_utter, temp_party_state], 1)
+
+            '''
+            input for l_cell:
+            - input: concatenation of utterance and context vector -> (batch * party) * (d_m + d_p)
+            - hidden: hidden state -> (batch * party) * d_p
+            '''
+            temp_listener = self.l_cell(temp_utter_party_state, q.view(-1, self.d_p)).view(num_batch, -1, self.d_p)  # batch * party * d_p
+            temp_listener = self.dropout(temp_listener)
         else:
-            ql_ = q0
-        qmask_ = qmask.unsqueeze(2)
-        q_ = ql_ * (1 - qmask_) + qs_ * qmask_
-        e0 = torch.zeros(qmask.size()[0], self.D_e).type(U.type()) if e0.size()[0] == 0 \
-            else e0
-        e_ = self.e_cell(self._select_parties(q_, qm_idx), e0)
-        e_ = self.dropout(e_)
+            temp_listener = q
+        temp_q_mask = q_mask.unsqueeze(2)  # batch * party * 1
+        # Party state (updated)
+        res_q = temp_listener * (1 - temp_q_mask) + temp_speaker * temp_q_mask  # batch * party * d_p
 
-        return g_, q_, e_, alpha
+        # Emotion Representation
+        e = torch.zeros(num_batch, self.d_e).type(utter.type()) if e.size()[0] == 0 else e
+        '''
+        input for e_cell:
+        - input: (updated) party state of the corresponding party (defined by q_mask) -> batch * d_p
+        - hidden: hidden state -> batch * d_e
+        '''
+        temp_e = self.e_cell(self._select_parties(res_q, qm_idx), e)
+        res_e = self.dropout(temp_e)  # batch * d_e
 
+        return res_g, res_q, res_e, alpha
 
 class DialogueRNN(nn.Module):
 
-    def __init__(self, D_m, D_g, D_p, D_e, listener_state=False,
-                 context_attention='simple', D_a=100, dropout=0.5):
+    def __init__(self, d_m, d_g, d_p, d_e, listener_state=False,
+                 context_attention='simple', d_a=100, dropout_rate=0.5):
         super(DialogueRNN, self).__init__()
 
-        self.D_m = D_m
-        self.D_g = D_g
-        self.D_p = D_p
-        self.D_e = D_e
-        self.dropout = nn.Dropout(dropout)
+        self.d_m = d_m
+        self.d_g = d_g
+        self.d_p = d_p
+        self.d_e = d_e
+        self.dropout = nn.Dropout(dropout_rate)
 
-        self.dialogue_cell = DialogueRNNCell(D_m, D_g, D_p, D_e,
-                                             listener_state, context_attention, D_a, dropout)
+        self.dialogue_cell = DialogueRNNCell(d_m, d_g, d_p, d_e, listener_state, context_attention, d_a, dropout_rate)
 
-    def forward(self, U, qmask):
+    def forward(self, utters, q_masks):
         """
-        U -> seq_len, batch, D_m
-        qmask -> seq_len, batch, party
+        utter: utterance -> (seq_len, batch, d_m)
+        q_mask: party state mask -> (seq_len, batch, party)
         """
 
-        g_hist = torch.zeros(0).type(U.type())  # 0-dimensional tensor
-        q_ = torch.zeros(qmask.size()[1], qmask.size()[2],
-                         self.D_p).type(U.type())  # batch, party, D_p
-        e_ = torch.zeros(0).type(U.type())  # batch, D_e
-        e = e_
+        # Initialization
+        num_batch = q_masks.size()[1]
+        num_party = q_masks.size()[2]
+        g_hist = torch.zeros(0).type(utters.type())  # 0-dimensional tensor
+        q = torch.zeros(num_batch, num_party, self.d_p).type(utters.type())  # (batch * party * d_p)
+        temp_e = torch.zeros(0).type(utters.type())  # (batch * d_e)
+        e = temp_e
 
-        alpha = []
-        for u_, qmask_ in zip(U, qmask):
-            g_, q_, e_, alpha_ = self.dialogue_cell(u_, qmask_, g_hist, q_, e_)
-            g_hist = torch.cat([g_hist, g_.unsqueeze(0)], 0)
-            e = torch.cat([e, e_.unsqueeze(0)], 0)
-            if type(alpha_) != type(None):
-                alpha.append(alpha_[:, 0, :])
+        alpha_list = []
 
-        return e, alpha  # seq_len, batch, D_e
+        # iter all utterances
+        for utter, q_mask in zip(utters, q_masks):
+            g, q, temp_e, temp_alpha = self.dialogue_cell(utter, q_mask, g_hist, q, temp_e)
+
+            # append history global state
+            g_hist = torch.cat([g_hist, g.unsqueeze(0)], 0)
+            # append history emotion representation
+            e = torch.cat([e, temp_e.unsqueeze(0)], 0)
+
+            if type(temp_alpha) != type(None):
+                alpha_list.append(temp_alpha[:, 0, :])  # append current attention score to the list
+
+        return e, alpha_list  # (seq_len * batch * d_e), list of history attention score
 
 
 class BiModel(nn.Module):
@@ -449,7 +489,6 @@ class E2EModel(nn.Module):
         hidden = self.dropout(hidden)
         log_prob = F.log_softmax(self.smax_fc(hidden), -1)  # batch, n_classes
         return log_prob
-
 
 class Model(nn.Module):
 
@@ -707,7 +746,6 @@ class DailyDialogueModel(nn.Module):
         hidden = self.dropout(hidden)
         log_prob = F.log_softmax(self.smax_fc(hidden), 2)  # seq_len, batch, n_classes
         return log_prob, alpha, alpha_f, alpha_b
-
 
 class UnMaskedWeightedNLLLoss(nn.Module):
 
