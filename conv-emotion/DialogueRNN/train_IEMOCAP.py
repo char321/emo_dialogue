@@ -66,7 +66,7 @@ def train_or_eval_model(model, loss_function, dataloader, epoch, optimizer=None,
         textf, visuf, acouf, qmask, umask, label =\
                 [d.cuda() for d in data[:-1]] if cuda else data[:-1]
         #log_prob = model(torch.cat((textf,acouf,visuf),dim=-1), qmask,umask,att2=True) # seq_len, batch, n_classes
-        log_prob, alpha, alpha_f, alpha_b = model(textf, qmask,umask,att2=True) # seq_len, batch, n_classes
+        log_prob, alpha, alpha_f, alpha_b = model(textf, qmask, umask, use_att=True) # seq_len, batch, n_classes
         lp_ = log_prob.transpose(0,1).contiguous().view(-1,log_prob.size()[2]) # batch*seq_len, n_classes
         labels_ = label.view(-1) # batch*seq_len
         loss = loss_function(lp_, labels_, umask)
@@ -103,28 +103,19 @@ def train_or_eval_model(model, loss_function, dataloader, epoch, optimizer=None,
 
 if __name__ == '__main__':
 
+    # default argument
     parser = argparse.ArgumentParser()
-    parser.add_argument('--no-cuda', action='store_true', default=False,
-                        help='does not use GPU')
-    parser.add_argument('--lr', type=float, default=0.0001, metavar='LR',
-                        help='learning rate')
-    parser.add_argument('--l2', type=float, default=0.00001, metavar='L2',
-                        help='L2 regularization weight')
-    parser.add_argument('--rec-dropout', type=float, default=0.1,
-                        metavar='rec_dropout', help='rec_dropout rate')
-    parser.add_argument('--dropout', type=float, default=0.1, metavar='dropout',
-                        help='dropout rate')
-    parser.add_argument('--batch-size', type=int, default=30, metavar='BS',
-                        help='batch size')
-    parser.add_argument('--epochs', type=int, default=60, metavar='E',
-                        help='number of epochs')
-    parser.add_argument('--class-weight', action='store_true', default=True,
-                        help='class weight')
-    parser.add_argument('--active-listener', action='store_true', default=False,
-                        help='active listener')
+    parser.add_argument('--no-cuda', action='store_true', default=False, help='does not use GPU')
+    parser.add_argument('--lr', type=float, default=0.0001, metavar='LR', help='learning rate')
+    parser.add_argument('--l2', type=float, default=0.00001, metavar='L2', help='L2 regularization weight')
+    parser.add_argument('--rec-dropout-rate', type=float, default=0.1, metavar='rec_dropout_rate', help='recurrent dropout rate')
+    parser.add_argument('--dropout-rate', type=float, default=0.1, metavar='dropout_rate', help='dropout rate')
+    parser.add_argument('--batch-size', type=int, default=30, metavar='BS', help='batch size')
+    parser.add_argument('--epochs', type=int, default=60, metavar='E', help='number of epochs')
+    parser.add_argument('--class-weight', action='store_true', default=True, help='class weight')
+    parser.add_argument('--active-listener', action='store_true', default=False, help='active listener')
     parser.add_argument('--attention', default='general', help='Attention type')
-    parser.add_argument('--tensorboard', action='store_true', default=False,
-                        help='Enables tensorboard log')
+    parser.add_argument('--tensorboard', action='store_true', default=False, help='Enables tensorboard log')
     args = parser.parse_args()
 
     print(args)
@@ -140,47 +131,43 @@ if __name__ == '__main__':
         writer = SummaryWriter()
 
     batch_size = args.batch_size
-    n_classes  = 6
-    cuda       = args.cuda
-    n_epochs   = args.epochs
+    n_classes = 6
+    cuda = args.cuda
+    n_epochs = args.epochs
 
-    D_m = 100
-    D_g = 500
-    D_p = 500
-    D_e = 300
-    D_h = 300
+    # dimensions
+    d_m = 100  # dimension of the utterance representation
+    d_g = 500  # dimension of global state
+    d_p = 500  # dimension of party state (speaker update is sufficient)
+    d_e = 300  # dimension of emotion representation
+    d_h = 300  # dimension of hidden layer
+    d_a = 100  # concat attention
 
-    D_a = 100 # concat attention
-
-    model = BiModel(D_m, D_g, D_p, D_e, D_h,
+    # init model
+    model = BiModel(d_m, d_g, d_p, d_e, d_h,
                     n_classes=n_classes,
                     listener_state=args.active_listener,
                     context_attention=args.attention,
-                    dropout_rec=args.rec_dropout,
-                    dropout=args.dropout)
+                    rec_dropout_rate=args.rec_dropout_rate,
+                    dropout_rate=args.dropout_rate)
+
     if cuda:
         model.cuda()
-    loss_weights = torch.FloatTensor([
-                                        1/0.086747,
-                                        1/0.144406,
-                                        1/0.227883,
-                                        1/0.160585,
-                                        1/0.127711,
-                                        1/0.252668,
-                                        ])
+
+    # get weights of classes
+    loss_weights = torch.FloatTensor([1/0.086747, 1/0.144406, 1/0.227883, 1/0.160585, 1/0.127711, 1/0.252668])
+
+    # define loss function
     if args.class_weight:
-        loss_function  = MaskedNLLLoss(loss_weights.cuda() if cuda else loss_weights)
+        loss_function = MaskedNLLLoss(loss_weights.cuda() if cuda else loss_weights)
     else:
         loss_function = MaskedNLLLoss()
     optimizer = optim.Adam(model.parameters(),
                            lr=args.lr,
                            weight_decay=args.l2)
 
-    train_loader, valid_loader, test_loader =\
-            get_IEMOCAP_loaders('./IEMOCAP_features/IEMOCAP_features_raw.pkl',
-                                valid=0.0,
-                                batch_size=batch_size,
-                                num_workers=2)
+    # load dataset
+    train_loader, valid_loader, test_loader = get_IEMOCAP_loaders('./IEMOCAP_features/IEMOCAP_features_raw.pkl', valid=0.0, batch_size=batch_size, num_workers=2)
 
     best_loss, best_label, best_pred, best_mask = None, None, None, None
 

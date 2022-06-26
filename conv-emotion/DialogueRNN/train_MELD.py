@@ -164,8 +164,8 @@ model = BiModel(D_m, D_g, D_p, D_e, D_h,
                 n_classes=n_classes,
                 listener_state=active_listener,
                 context_attention=attention,
-                dropout_rec=rec_dropout,
-                dropout=dropout)
+                rec_dropout_rate=rec_dropout,
+                dropout_rate=dropout)
 
 if cuda:
     model.cuda()

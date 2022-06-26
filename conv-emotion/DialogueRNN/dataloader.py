@@ -3,6 +3,7 @@ from torch.utils.data import Dataset
 from torch.nn.utils.rnn import pad_sequence
 import pickle
 import pandas as pd
+import numpy as np
 
 class IEMOCAPDataset(Dataset):
 
@@ -10,6 +11,9 @@ class IEMOCAPDataset(Dataset):
         self.videoIDs, self.videoSpeakers, self.videoLabels, self.videoText,\
         self.videoAudio, self.videoVisual, self.videoSentence, self.trainVid,\
         self.testVid = pickle.load(open(path, 'rb'), encoding='latin1')
+
+        # print(len(self.videoText))
+
         '''
         label index mapping = {'hap':0, 'sad':1, 'neu':2, 'ang':3, 'exc':4, 'fru':5}
         '''
@@ -19,14 +23,17 @@ class IEMOCAPDataset(Dataset):
 
     def __getitem__(self, index):
         vid = self.keys[index]
-        return torch.FloatTensor(self.videoText[vid]),\
-               torch.FloatTensor(self.videoVisual[vid]),\
-               torch.FloatTensor(self.videoAudio[vid]),\
-               torch.FloatTensor([[1,0] if x=='M' else [0,1] for x in\
-                                  self.videoSpeakers[vid]]),\
-               torch.FloatTensor([1]*len(self.videoLabels[vid])),\
-               torch.LongTensor(self.videoLabels[vid]),\
-               vid
+
+        # text = torch.FloatTensor(self.videoText[vid])
+        text = torch.FloatTensor(np.stack(self.videoText[vid], axis=0))
+        visual = torch.FloatTensor(np.stack(self.videoVisual[vid], axis=0))
+        audio = torch.FloatTensor(np.stack(self.videoAudio[vid], axis=0))
+
+        speakers = torch.FloatTensor([[1, 0] if x == 'M' else [0, 1] for x in self.videoSpeakers[vid]])
+        len_labels = torch.FloatTensor([1] * len(self.videoLabels[vid]))
+        labels = torch.LongTensor(self.videoLabels[vid])
+
+        return text, visual, audio, speakers, len_labels, labels, vid
 
     def __len__(self):
         return self.len
