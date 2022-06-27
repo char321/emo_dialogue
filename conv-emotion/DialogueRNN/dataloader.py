@@ -4,6 +4,7 @@ from torch.nn.utils.rnn import pad_sequence
 import pickle
 import pandas as pd
 import numpy as np
+from tabulate import tabulate
 
 class IEMOCAPDataset(Dataset):
 
@@ -11,8 +12,6 @@ class IEMOCAPDataset(Dataset):
         self.videoIDs, self.videoSpeakers, self.videoLabels, self.videoText,\
         self.videoAudio, self.videoVisual, self.videoSentence, self.trainVid,\
         self.testVid = pickle.load(open(path, 'rb'), encoding='latin1')
-
-        # print(len(self.videoText))
 
         '''
         label index mapping = {'hap':0, 'sad':1, 'neu':2, 'ang':3, 'exc':4, 'fru':5}
@@ -24,14 +23,17 @@ class IEMOCAPDataset(Dataset):
     def __getitem__(self, index):
         vid = self.keys[index]
 
+        # reformat the data
         # text = torch.FloatTensor(self.videoText[vid])
-        text = torch.FloatTensor(np.stack(self.videoText[vid], axis=0))
-        visual = torch.FloatTensor(np.stack(self.videoVisual[vid], axis=0))
-        audio = torch.FloatTensor(np.stack(self.videoAudio[vid], axis=0))
+        text = torch.FloatTensor(np.stack(self.videoText[vid], axis=0))  # (seq_len * 100)
+        visual = torch.FloatTensor(np.stack(self.videoVisual[vid], axis=0))  # (seq_len * 512)
+        audio = torch.FloatTensor(np.stack(self.videoAudio[vid], axis=0))  # (seq_len * 100)
 
+        # [1, 0] - M; [0, 1] - F -> # (seq_len * 2)
         speakers = torch.FloatTensor([[1, 0] if x == 'M' else [0, 1] for x in self.videoSpeakers[vid]])
-        len_labels = torch.FloatTensor([1] * len(self.videoLabels[vid]))
-        labels = torch.LongTensor(self.videoLabels[vid])
+
+        len_labels = torch.FloatTensor([1] * len(self.videoLabels[vid]))  # seq_len
+        labels = torch.LongTensor(self.videoLabels[vid])  # seq_len
 
         return text, visual, audio, speakers, len_labels, labels, vid
 
@@ -39,8 +41,12 @@ class IEMOCAPDataset(Dataset):
         return self.len
 
     def collate_fn(self, data):
-        dat = pd.DataFrame(data)
-        return [pad_sequence(dat[i]) if i<4 else pad_sequence(dat[i], True) if i<6 else dat[i].tolist() for i in dat]
+        df = pd.DataFrame(data)
+
+        # reformat data's different features
+        # text, visual, audio, speakers, len_labels, labels, vid
+        return [pad_sequence(df[i]) if i < 4 else pad_sequence(df[i], True) if i < 6 else df[i].tolist() for i in df]
+
 
 class AVECDataset(Dataset):
 
@@ -69,6 +75,8 @@ class AVECDataset(Dataset):
     def collate_fn(self, data):
         dat = pd.DataFrame(data)
         return [pad_sequence(dat[i]) if i<4 else pad_sequence(dat[i], True) for i in dat]
+
+
 class MELDDataset(Dataset):
 
     def __init__(self, path, n_classes, train=True):
@@ -134,7 +142,6 @@ class DailyDialogueDataset(Dataset):
     def __len__(self):
         return self.len
     
-
 
 class DailyDialoguePadCollate:
 

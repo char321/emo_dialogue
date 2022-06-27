@@ -68,7 +68,6 @@ class MatchingAttention(nn.Module):
             temp_g = g_hist.permute(1, 2, 0)  # batch * d_g * seq_len
             temp_utter = utter.unsqueeze(1)  # batch * 1 * d_m
             att = F.softmax(torch.bmm(temp_utter, temp_g), dim=2)  # batch * 1 * seq_len
-
         elif self.att_type == 'general':
             # general attention
             temp_g = g_hist.permute(1, 2, 0)  # batch * d_g * seq_len
@@ -245,6 +244,7 @@ class DialogueRNN(nn.Module):
         temp_e = torch.zeros(0).type(utters.type())  # (batch * d_e)
         e = temp_e
 
+        # list of history attention score
         att_list = []
 
         # iter all utterances
@@ -257,9 +257,10 @@ class DialogueRNN(nn.Module):
             e = torch.cat([e, temp_e.unsqueeze(0)], 0)
 
             if type(att) != type(None):
+                # att -> batch * 1 * seq_len, where seq_len will increase as time
                 att_list.append(att[:, 0, :])  # append current attention score to the list
 
-        return e, att_list  # (seq_len * batch * d_e), list of history attention score
+        return e, att_list  # seq_len * batch * d_e, list of (batch * seq_len)
 
 
 class BiModel(nn.Module):
@@ -306,11 +307,11 @@ class BiModel(nn.Module):
         utters: sequence of utterance -> (seq_len * batch * D_m)
         q_masks: mask of global state -> (seq_len * batch * party)
         u_mask: mask of utterance, which indicate the effective length of utterance -> (batch * seq_len)
-        att: whether to use attention mechanism
+        use_att: whether to use attention mechanism
         """
 
         # forward cell
-        emotions_f, alpha_f = self.dialog_rnn_f(utters, q_masks)  # (seq_len * batch * d_e), list of history attention score
+        emotions_f, alpha_f = self.dialog_rnn_f(utters, q_masks)  # seq_len * batch * d_e, list of history attention score
         emotions_f = self.rec_dropout(emotions_f)
 
         # reverse seq of utterances
@@ -319,7 +320,7 @@ class BiModel(nn.Module):
         rev_q_masks = self._reverse_seq(q_masks, u_mask)
 
         # backward cell
-        emotions_b, alpha_b = self.dialog_rnn_b(rev_utters, rev_q_masks)
+        emotions_b, alpha_b = self.dialog_rnn_b(rev_utters, rev_q_masks)  # seq_len * batch * d_e, list of history attention score
         emotions_b = self._reverse_seq(emotions_b, u_mask)
         emotions_b = self.rec_dropout(emotions_b)
 
@@ -334,6 +335,7 @@ class BiModel(nn.Module):
                 # get emotion representation (context), and attention
                 emotion, att = self.match_att(emotions, e, mask=u_mask)
                 emotion_list.append(emotion.unsqueeze(0))
+                # att -> batch * 1 * seq_len, where seq_len is fixed in this loop
                 att_list.append(att[:, 0, :])
             emotion_list = torch.cat(emotion_list, dim=0)
             hidden = F.relu(self.linear(emotion_list))
@@ -343,7 +345,14 @@ class BiModel(nn.Module):
         hidden = self.dropout(hidden)
         log_prob = F.log_softmax(self.softmax_fc(hidden), 2)  # seq_len, batch, n_classes
 
+        # print(len(att_list))
+        # print(alpha_f[0].shape)
+
         if use_att:
+            # att_list contains attention of emotion representation over all previous emotions
+            # => it contains attention score with **same** shape, as seq_len is fixed in this step
+            # alpha_f, alpha_b contains attention of utterance over global history during learning
+            # => it contains attention score with **different** shape, as seq_len is increasing as time
             return log_prob, att_list, alpha_f, alpha_b
         else:
             return log_prob, [], alpha_f, alpha_b
@@ -358,7 +367,7 @@ class MaskedNLLLoss(nn.Module):
 
     def forward(self, pred, target, u_mask):
         """
-        pred: prediction -> (batch * seq_len * n_classes)
+        pred: prediction -> (batch * seq_len) * n_classes
         target: target class-> (batch * seq_len)
         u_mask: mask that indicate effective length of utterance -> (batch * seq_len)
         """
@@ -370,6 +379,7 @@ class MaskedNLLLoss(nn.Module):
         else:
             # weighted
             loss = self.loss(pred * temp_mask, target) / torch.sum(self.weight[target] * temp_mask.squeeze())
+
         return loss
 
 
