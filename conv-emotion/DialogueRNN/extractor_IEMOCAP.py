@@ -31,14 +31,16 @@ class TextFeatureExtractor(object):
         model = RobertaPreTrainedModel.from_pretrained('roberta-base')
         self.model = model.cuda() if self.use_gpu else model
 
-
 def assign_majority(e1, e2, e3, e4):
-    e1 = e1.split('\t')[1].replace(' ', '').split(';')
-    e2 = e2.split('\t')[1].replace(' ', '').split(';')
-    e3 = e3.split('\t')[1].replace(' ', '').split(';')
-    e4 = e4.split('\t')[1].replace(' ', '').split(';')
+    temp_e1 = e1.split('\t')[1].replace(' ', '').split(';')
+    temp_e2 = e2.split('\t')[1].replace(' ', '').split(';')
+    temp_e3 = e3.split('\t')[1].replace(' ', '').split(';')
+    temp_e4 = e4.split('\t')[1].replace(' ', '').split(';')
 
-    e = e1 + e2 + e3 + e4
+    # e = e1 + e2 + e3 + e4
+    # e = temp_e1[:1] + temp_e2[:1] + temp_e3[:1] + temp_e4[:1]
+    e = temp_e1 + temp_e2 + temp_e3 + temp_e4[:1]
+
     temp = {}
     for label in e:
         if label != '':
@@ -49,22 +51,30 @@ def assign_majority(e1, e2, e3, e4):
 
     sorted_temp = dict(sorted(temp.items(), key=operator.itemgetter(1), reverse=True))
     values = list(temp.values())
-    count = values.count(max(values))
+    max_num = values.count(max(values))
 
     remap = {'Excited': 'exc', 'Neutral': 'neu', 'Happiness': 'hap', 'Anger': 'ang', 'Frustration': 'fru'}
     label = list(sorted_temp.keys())[0]
 
-    if count > 1 or label not in remap.keys() or sorted_temp[label] <= 2:
+    if label not in remap.keys(): # or sorted_temp[label] <= 2:
         return 'xxx'
+    elif max_num > 1:
+        return 'xxx'
+        # return assign_majority_again(e1, e2, e3, e4)
     else:
-        return remap[label]
+        # return remap[label]
+        if remap[label] == 'hap':
+            # idk why code of DialogueRNN do this
+            return remap[label]
+        else:
+            return 'xxx'
 
 
 def data_reader():
     path = './raw_data/IEMOCAP_full_release'
 
-    dir_names = ['Session1', 'Session2', 'Session3', 'Session4', 'Session5']
     dir_names = ['Session1']
+    # dir_names = ['Session1', 'Session2', 'Session3', 'Session4', 'Session5']
 
     # iter sessions
     for dir_name in dir_names:
@@ -78,7 +88,7 @@ def data_reader():
         train_set = IEMOCAPDataset(path=pkl_path)
         videoIDs, videoSpeakers, videoLabels, _, _, _, videoSentence, _, _ = pickle.load(open(pkl_path, 'rb'),
                                                                                          encoding='latin1')
-        ignore_dict = {}
+        ignore_dict = {}  # map 'id' to 'label'
         # TODO - store label according order of transcription
 
         utter_ids = {}
@@ -86,154 +96,119 @@ def data_reader():
         utter_speakers = {}
         utter_sentences = {}
 
-        # iter label file
+        # label file root path
         label_root_path = path + '/' + dir_name + '/dialog/EmoEvaluation'
         file_names = listdir(label_root_path)
+
+        # transcription file root path
+        transcription_root_path = path + '/' + dir_name + '/dialog/transcriptions'
+
+        # wav file root path
+        wav_root_path = path + '/' + dir_name + '/sentences/wav'
+
         for f_name in file_names:
             label_file_path = label_root_path + '/' + f_name
             if (not os.path.isfile(label_file_path)) or (f_name.startswith('.')):
                 continue
-            file = open(label_file_path, 'r')
-            lines = file.readlines()
+            label_file = open(label_file_path, 'r')
+            label_lines = label_file.readlines()
 
-            time_to_id = {}
-            time_to_label = {}
-            time_to_speaker = {}
-            time_to_sentence = {}
-            print(lines)
-            # list of labels for all utterances in each conversation
-            for line_idx, line in enumerate(lines):
+            # time_to_id = {}
+            # time_to_label = {}
+            # time_to_speaker = {}
+            # time_to_sentence = {}
+
+            ### generate filter mask - instance with no majority label should be ignored
+            for line_idx, line in enumerate(label_lines):
                 if not line.startswith('['):
                     continue
 
-                temp = line.split('\t')  # time; description; label; dim
-                if temp[2] not in label_map.keys():
-                    if temp[2] == 'xxx':
-                        # try to resign majority label
-                        e1 = lines[line_idx + 1]
-                        e2 = lines[line_idx + 2]
-                        e3 = lines[line_idx + 3]
-                        e4 = lines[line_idx + 4]
-                        new_label = assign_majority(e1, e2, e3, e4)
+                temp = line.split('\t')  # time; id; label; dim
+                temp_id = temp[1]
+                temp_label = temp[2]
+                if temp_label not in label_map.keys():
+                    if temp_label == 'xxx':
+                        # no majority - try to resign majority label
+                        new_label = assign_majority(label_lines[line_idx + 1],
+                                                    label_lines[line_idx + 2],
+                                                    label_lines[line_idx + 3],
+                                                    label_lines[line_idx + 4])
                         if new_label == 'xxx':
-                            ignore_dict[temp[1]] = True
+                            ignore_dict[temp_id] = 'xxx'
                         else:
-                            ignore_dict[temp[1]] = False
-
-                            time_stamp = float(re.sub('\[', '', temp[0].split(' ')[0]))
-                            # id
-                            u_id = temp[1]
-                            time_to_id[time_stamp] = u_id
-                            # label
-                            time_to_label[time_stamp] = label_map[new_label]
-                            # speaker
-                            speaker = u_id.split('_')[2][0]
-                            time_to_speaker[time_stamp] = speaker
+                            ignore_dict[temp_id] = new_label
+                    else:
+                        # other emotion
+                        ignore_dict[temp_id] = 'xxx'
                 else:
-                    ignore_dict[temp[1]] = False
+                    ignore_dict[temp_id] = temp_label
 
-                    time_stamp = float(re.sub('\[', '', temp[0].split(' ')[0]))
-
-                    # id
-                    u_id = temp[1]
-                    time_to_id[time_stamp] = u_id
-
-                    # label
-                    time_to_label[time_stamp] = label_map[temp[2]]
-
-                    # speaker
-                    speaker = u_id.split('_')[2][0]
-                    time_to_speaker[time_stamp] = speaker
-
-            # sorted list according time stamp
-            sorted_label = []
-            sorted_speaker = []
-            sorted_id = []
-            print(time_to_label)
-            time_to_label = collections.OrderedDict(sorted(time_to_label.items()))
-
-            for k, v in time_to_label.items():
-                if f_name == 'Ses01F_impro07.txt':
-                    print(k)
-
-                sorted_label.append(v)
-                sorted_id.append(time_to_id[k])
-                sorted_speaker.append(time_to_speaker[k])
-
-            # print('---')
-            # print(f_name)
-            # print(len(sorted_label))
-            key_word = re.sub('.txt', '', f_name)
-
-            utter_ids[key_word] = sorted_id
-            utter_labels[key_word] = sorted_label
-            utter_speakers[key_word] = sorted_speaker
-
-        print(utter_labels)
-        print(ignore_dict)
-
-        # read transcript file
-        transcription_path = path + '/' + dir_name + '/dialog/transcriptions'
-        wav_path = path + '/' + dir_name + '/sentences/wav'
-
-        # iter utterances transcription file
-        file_names = listdir(transcription_path)
-        for f_name in file_names:
-            ses_path = transcription_path + '/' + f_name
-            file = open(ses_path, 'r')
-            lines = file.readlines()
-
-            descriptions = []
-            s_times = []
-            e_times = []
-            text_features = []
-            wav_features = []
-
-            # iter lines in txt file
-            key_word = re.sub('.txt', '', f_name)
-
-            video_labels = videoLabels[key_word]
-            my_labels = utter_labels[key_word]
+            ### read transcription file
+            transcription_file_path = transcription_root_path + '/' + f_name
+            transcription_file = open(transcription_file_path, 'r')
+            transcription_lines = transcription_file.readlines()
 
             count = 0
-            utter_ids = []
-            for line in lines:
+            u_ids = []
+            u_speakers = []
+            s_times = []
+            e_times = []
+            u_texts = []
 
+            for line in transcription_lines:
                 try:
                     # process transcription file
                     temp = re.split(' ', line, 2)
                     u_id = temp[0]
-                    if ignore_dict[u_id] == True:
+                    if ignore_dict[u_id] == 'xxx':
                         continue
                     time = re.sub(r'[\[\]:]', '', temp[1]).split('-')
                     s_time, e_time = float(time[0]), float(time[1])
                     text = temp[2]
-                    text_feature = text_extractor(text)
 
-                    utter_ids.append(u_id)
+                    # TODO - implement text feature extraction
+                    # text_feature = text_extractor(text)
+
+                    speaker = u_id.split('_')[-1][0]
+
+                    u_ids.append(u_id)
+                    u_speakers.append(speaker)
                     s_times.append(s_time)
                     e_times.append(e_times)
-                    text_features.append(text_feature)
+                    u_texts.append(text)
                     count += 1
                 except:
                     # print(ses_path)
                     # print(line)
                     pass
 
+            u_labels = []
+            for u_id in u_ids:
+                label = ignore_dict[u_id]
+                if label != 'xxx':
+                    u_labels.append(label_map[label])
 
+            # iter lines in txt file
+            key_word = re.sub('.txt', '', f_name)
+            utter_ids[key_word] = u_ids
+            utter_labels[key_word] = u_labels
+            utter_speakers[key_word] = u_speakers
+            utter_sentences[key_word] = u_texts
 
+            # test my obtains data vs data used in DialogueRNN
+            video_labels = videoLabels[key_word]
+            my_labels = utter_labels[key_word]
             if count != len(video_labels):
-                if f_name == 'Ses01F_impro07.txt':
-                    print(f_name)
-                    print(my_labels)
-                    print(video_labels)
-                    print(str(count) + '-' + str(len(my_labels)) + '-' + str(len(video_labels)))
-                    print(utter_ids[key_word])
-                    print(videoIDs[key_word])
-                    print(utter_speakers[key_word])
-                    print(videoSpeakers[key_word])
-                    print(utter_sentences[key_word])
-                    print(videoSentence[key_word])
+                print(f_name)
+            #     print(str(count) + '-' + str(len(my_labels)) + '-' + str(len(video_labels)))
+            #     print(my_labels)
+            #     print(video_labels)
+            #     print(utter_ids[key_word])
+            #     print(videoIDs[key_word])
+            #     print(utter_speakers[key_word])
+            #     print(videoSpeakers[key_word])
+            #     print(utter_sentences[key_word])
+            #     print(videoSentence[key_word])
 
         # iter utterances wav file
 
@@ -252,11 +227,6 @@ def data_reader():
         #             wav_data = read(ses_utter_path)
         #         except:
         #             print(ses_utter_path)
-
-        # iter labels file
-        # emo_map = {'angry': 'ang', 'happy': 'hap', 'sad': 'sad', 'neutral': 'neu', 'frustrated': 'fru', 'excited': 'exc', fearful, surprised, disgusted, other}
-        # label_dict = {'neu': 1, 'e': 2}
-        # emo_to_num = {'Neutral': 0, ''}
 
 
 
