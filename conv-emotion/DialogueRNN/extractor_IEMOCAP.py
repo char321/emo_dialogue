@@ -1,7 +1,8 @@
 import torch
 import numpy as np
 import pandas as pd
-from transformers import RobertaModel, RobertaPreTrainedModel, RobertaTokenizer
+from torch.nn import MaxPool1d
+from transformers import RobertaModel, RobertaPreTrainedModel, RobertaTokenizer, RobertaConfig
 from os import listdir
 import os
 from os.path import isfile, join
@@ -11,6 +12,8 @@ from dataloader import IEMOCAPDataset
 import pickle
 import collections
 import operator
+from torch.utils.data import Dataset, DataLoader
+from tqdm import tqdm
 
 
 def text_extractor(text):
@@ -23,13 +26,127 @@ def text_extractor(text):
 
     return text
 
-class TextFeatureExtractor(object):
-    def __init__(self):
-        self.use_gpu = torch.cuda.is_available()
+class TextDataset(Dataset):
+    def __init__(self, tokenizer, utters):
+        self.tokenizer = tokenizer
+        self.utters = utters
+        # self.keys = list(utter_texts.keys())
 
-        self.tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
-        model = RobertaPreTrainedModel.from_pretrained('roberta-base')
-        self.model = model.cuda() if self.use_gpu else model
+    def __len__(self):
+        # print('---len')
+        return len(self.utters)
+
+    def __getitem__(self, index):
+        # print('---get_item')
+        # c_id = self.keys[index]
+        # text = self.utter_texts[c_id]
+        # print(self.utters)
+        text = self.utters[index]
+        # print(text)
+        # item = {'input_ids': text, 'attn_mask': None, 'output_path': None}
+        # print(item)
+        return text
+
+    def collate_fn(self, data):
+        # print('---collate_fn')
+        # print(data)
+        encodings = self.tokenizer(data, return_tensors='pt', padding=True, truncation=True, max_length=256)
+        # print('---end_collate_fn')
+        return encodings
+
+class RobertaExtractor(RobertaPreTrainedModel):
+
+  # Initialisation
+  # config: pre-trained model config (model name)
+  # dropout_rate: dropout rate
+    def __init__(self, config):
+        super().__init__(config)
+
+        self.roberta = RobertaModel(config)
+        self.init_weights()
+
+    def forward(
+            self,
+            input_ids=None,
+            attention_mask=None,
+            token_type_ids=None,
+            position_ids=None,
+            head_mask=None,
+            inputs_embeds=None,
+            labels=None,
+            output_attentions=None,
+            output_hidden_states=None,
+            return_dict=None):
+        outputs = self.roberta(
+            input_ids,
+            attention_mask=attention_mask,
+            token_type_ids=token_type_ids,
+            position_ids=position_ids,
+            head_mask=head_mask,
+            inputs_embeds=inputs_embeds,
+            output_attentions=output_attentions,
+            output_hidden_states=output_hidden_states,
+            return_dict=return_dict,
+        )
+
+        return outputs
+
+class TextFeatureExtractor(object):
+    def __init__(self, config='roberta-base', batch_size=30, kernel_size=4, stride=4):
+        self.use_gpu = torch.cuda.is_available()
+        self.tokenizer = RobertaTokenizer.from_pretrained(config)
+        # model = RobertaPreTrainedModel.from_pretrained('roberta-base')
+        # self.model = model.cuda() if self.use_gpu else model
+
+        self.extractor = RobertaExtractor.from_pretrained(config)
+        # self.extractor = RobertaPreTrainedModel.from_pretrained('roberta-base')
+        self.batch_size = batch_size
+        self.kernel_size = kernel_size
+        self.stride = stride
+
+    def get_text_feature(self, utters):
+        data_set = TextDataset(self.tokenizer, utters)
+        data_loader = DataLoader(
+            data_set,
+            batch_size=self.batch_size,
+            # collate_fn=data_set.collate_fn,
+            drop_last=False,
+            pin_memory=self.use_gpu
+        )
+        # print('mark 1')
+        # print(data_loader)
+        res = []
+        self.extractor.eval()
+        with torch.no_grad():
+            loader = tqdm(data_loader)
+            # print('mark 2')
+            # print(loader)
+            # print('mark 3')
+            for data in loader:
+                # print('mark 4')
+                # print('===')
+                # print(data)
+                # print(len(data))
+                encodings = self.tokenizer(data, return_tensors='pt', padding=True, truncation=True,
+                                           max_length=256)
+                # encodings.to(DEVICE)
+
+                output = self.extractor(**encodings)
+                # text_vector = output.last_hidden_state#[:, 0, :]
+                text_vector = output.pooler_output
+                pooling = torch.nn.AvgPool1d(self.kernel_size, self.stride)
+                sampled_text_vector = pooling(text_vector)
+                print(torch.tensor(sampled_text_vector).shape)
+
+                # print('mark 5')
+                # res = self.extractor(data)
+                # print('mark 5')
+                res.append(sampled_text_vector)
+        # print(len(res[0]))
+        # print(len(res[1]))
+        res = np.concatenate(res, axis=0)
+        # print(len(res))
+        return res
 
 def assign_majority(e1, e2, e3, e4):
     temp_e1 = e1.split('\t')[1].replace(' ', '').split(';')
@@ -76,6 +193,14 @@ def data_reader():
     dir_names = ['Session1']
     # dir_names = ['Session1', 'Session2', 'Session3', 'Session4', 'Session5']
 
+    ignore_dict = {}  # map 'id' to 'label'
+    # TODO - store label according order of transcription
+
+    utter_ids = {}
+    utter_labels = {}
+    utter_speakers = {}
+    utter_texts = {}
+
     # iter sessions
     for dir_name in dir_names:
 
@@ -85,16 +210,8 @@ def data_reader():
 
         # get label from DialogueRNN paper, so that the assigned labels can be consistent
         pkl_path = './IEMOCAP_features/IEMOCAP_features_raw.pkl'
-        train_set = IEMOCAPDataset(path=pkl_path)
         videoIDs, videoSpeakers, videoLabels, _, _, _, videoSentence, _, _ = pickle.load(open(pkl_path, 'rb'),
                                                                                          encoding='latin1')
-        ignore_dict = {}  # map 'id' to 'label'
-        # TODO - store label according order of transcription
-
-        utter_ids = {}
-        utter_labels = {}
-        utter_speakers = {}
-        utter_sentences = {}
 
         # label file root path
         label_root_path = path + '/' + dir_name + '/dialog/EmoEvaluation'
@@ -193,7 +310,7 @@ def data_reader():
             utter_ids[key_word] = u_ids
             utter_labels[key_word] = u_labels
             utter_speakers[key_word] = u_speakers
-            utter_sentences[key_word] = u_texts
+            utter_texts[key_word] = u_texts
 
             # test my obtains data vs data used in DialogueRNN
             video_labels = videoLabels[key_word]
@@ -227,7 +344,7 @@ def data_reader():
         #             wav_data = read(ses_utter_path)
         #         except:
         #             print(ses_utter_path)
-
+        return utter_ids, utter_labels, utter_speakers, utter_texts
 
 
 
@@ -237,4 +354,24 @@ if __name__ == '__main__':
     d_v = 512  # visual
     d_a = 100  # audio
 
-    data_reader()
+    utter_ids, utter_labels, utter_speakers, utter_texts = data_reader()
+
+    text_feature_extractor = TextFeatureExtractor()
+    utter_text_features = {}
+    for k, v in utter_texts.items():
+        res = text_feature_extractor.get_text_feature(v)
+        utter_text_features[k] = v
+    print(len(utter_texts.keys()))
+    print(len(utter_texts.keys()))
+
+    # for utters in list(utter_texts.values())[:1]:
+    #     res = text_feature_extractor.get_text_feature(utters)
+    #     print(len(res))
+    #     print(res[0])
+
+
+    # pkl_path = './IEMOCAP_features/IEMOCAP_features_raw.pkl'
+    # videoIDs, videoSpeakers, videoLabels, _, _, _, videoSentence, trainVid, testVid = pickle.load(open(pkl_path, 'rb'),
+    #                                                                                  encoding='latin1')
+    # print(videoSentence)
+    # print([x for x in testVid])
