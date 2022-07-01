@@ -71,11 +71,17 @@ def train_or_eval_model(model, loss_function, dataloader, epoch, cuda, optimizer
         # import ipdb;ipdb.set_trace()
         # text, visual, audio, speakers, len_labels, labels
         textf, visuf, acouf, q_mask, u_mask, label = [d.cuda() for d in data[:-1]] if cuda else data[:-1]
+        # print('---')
 
-        #log_prob = model(torch.cat((textf,acouf,visuf),dim=-1), qmask,umask,att2=True) # seq_len, batch, n_classes
+        # print(textf.shape)
+        # print(visuf.shape)
+        # print(acouf.shape)
 
         # alpha is the attention score
-        log_prob, alpha, alpha_f, alpha_b = model(textf, q_mask, u_mask, use_att=True)  # log_prob -> seq_len * batch * n_classes
+        # log_prob, alpha, alpha_f, alpha_b = model(textf, q_mask, u_mask, use_att=True)  # log_prob -> seq_len * batch * n_classes
+
+        log_prob, alpha, alpha_f, alpha_b = model(torch.cat((textf, acouf, visuf), dim=-1), q_mask, u_mask, use_att=True) # seq_len, batch, n_classes
+
         temp_log_prob = log_prob.transpose(0, 1).contiguous().view(-1, log_prob.size()[2])  # (batch * seq_len) * n_classes
         temp_label = label.view(-1)  # (batch * seq_len)
         loss = loss_function(temp_log_prob, temp_label, u_mask)  # value
@@ -115,16 +121,21 @@ def train_or_eval_model(model, loss_function, dataloader, epoch, cuda, optimizer
     return avg_loss, avg_accuracy, labels, predictions, masks, avg_f_score, [alphas, alphas_f, alphas_b, vids]
 
 if __name__ == '__main__':
-
+    LEARNING_RATE = 0.0002
+    L2_WEIGHT = 0.00001
+    REC_DROP_OUT = 0.1
+    DROP_OUT = 0.1
+    BATCH_SIZE = 30
+    NUM_EPOCHS = 40
     # default argument
     parser = argparse.ArgumentParser()
     parser.add_argument('--no-cuda', action='store_true', default=False, help='does not use GPU')
-    parser.add_argument('--lr', type=float, default=0.0001, metavar='LR', help='learning rate')
-    parser.add_argument('--l2', type=float, default=0.00001, metavar='L2', help='L2 regularization weight')
-    parser.add_argument('--rec-dropout-rate', type=float, default=0.1, metavar='rec_dropout_rate', help='recurrent dropout rate')
-    parser.add_argument('--dropout-rate', type=float, default=0.1, metavar='dropout_rate', help='dropout rate')
-    parser.add_argument('--batch-size', type=int, default=30, metavar='BS', help='batch size')
-    parser.add_argument('--epochs', type=int, default=20, metavar='E', help='number of epochs')
+    parser.add_argument('--lr', type=float, default=LEARNING_RATE, metavar='LR', help='learning rate')
+    parser.add_argument('--l2', type=float, default=L2_WEIGHT, metavar='L2', help='L2 regularization weight')
+    parser.add_argument('--rec-dropout-rate', type=float, default=REC_DROP_OUT, metavar='rec_dropout_rate', help='recurrent dropout rate')
+    parser.add_argument('--dropout-rate', type=float, default=DROP_OUT, metavar='dropout_rate', help='dropout rate')
+    parser.add_argument('--batch-size', type=int, default=BATCH_SIZE, metavar='BS', help='batch size')
+    parser.add_argument('--epochs', type=int, default=NUM_EPOCHS, metavar='E', help='number of epochs')
     parser.add_argument('--class-weight', action='store_true', default=True, help='class weight')
     parser.add_argument('--active-listener', action='store_true', default=False, help='active listener')
     parser.add_argument('--attention', default='general', help='Attention type')
@@ -149,7 +160,10 @@ if __name__ == '__main__':
     n_epochs = args.epochs
 
     # dimensions
-    d_m = 100  # dimension of the utterance representation
+    dim_text = 192
+    dim_audio = 512
+    dim_visual = 100
+    d_m = dim_text + dim_audio + dim_visual  # dimension of the utterance representation
     d_g = 500  # dimension of global state
     d_p = 500  # dimension of party state (speaker update is sufficient)
     d_e = 300  # dimension of emotion representation

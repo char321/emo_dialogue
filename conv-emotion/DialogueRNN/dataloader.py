@@ -13,6 +13,8 @@ class IEMOCAPDataset(Dataset):
         self.videoAudio, self.videoVisual, self.videoSentence, self.trainVid,\
         self.testVid = pickle.load(open(path, 'rb'), encoding='latin1')
 
+        path = './IEMOCAP_features/text_feature.pkl'
+        self.videoText = pickle.load(open(path, 'rb'), encoding='latin1')
         '''
         label index mapping = {'hap':0, 'sad':1, 'neu':2, 'ang':3, 'exc':4, 'fru':5}
         '''

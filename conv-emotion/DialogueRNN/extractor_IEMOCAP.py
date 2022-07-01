@@ -2,7 +2,7 @@ import torch
 import numpy as np
 import pandas as pd
 from torch.nn import MaxPool1d
-from transformers import RobertaModel, RobertaPreTrainedModel, RobertaTokenizer, RobertaConfig
+from transformers import RobertaModel, RobertaPreTrainedModel, RobertaTokenizer, RobertaConfig, Wav2Vec2FeatureExtractor, Wav2Vec2CTCTokenizer
 from os import listdir
 import os
 from os.path import isfile, join
@@ -14,17 +14,7 @@ import collections
 import operator
 from torch.utils.data import Dataset, DataLoader
 from tqdm import tqdm
-
-
-def text_extractor(text):
-    # use pre-trained model
-    # or training roberta on this dataset -> hidden layer provide feature
-
-    # tokenizer = RobertaTokenizer.from_pretrained('roberta-base')
-    # roberta = RobertaPreTrainedModel.from_pretrained('roberta-base')
-
-
-    return text
+import pickle
 
 class TextDataset(Dataset):
     def __init__(self, tokenizer, utters):
@@ -91,6 +81,10 @@ class RobertaExtractor(RobertaPreTrainedModel):
 
         return outputs
 
+class AudioFeatureExtractor(object):
+    def __init__(self):
+        self.tokenizer = Wav2Vec2CTCTokenizer()
+
 class TextFeatureExtractor(object):
     def __init__(self, config='roberta-base', batch_size=30, kernel_size=4, stride=4):
         self.use_gpu = torch.cuda.is_available()
@@ -136,7 +130,8 @@ class TextFeatureExtractor(object):
                 text_vector = output.pooler_output
                 pooling = torch.nn.AvgPool1d(self.kernel_size, self.stride)
                 sampled_text_vector = pooling(text_vector)
-                print(torch.tensor(sampled_text_vector).shape)
+
+                # print(torch.tensor(sampled_text_vector).shape)
 
                 # print('mark 5')
                 # res = self.extractor(data)
@@ -191,7 +186,7 @@ def data_reader():
     path = './raw_data/IEMOCAP_full_release'
 
     dir_names = ['Session1']
-    # dir_names = ['Session1', 'Session2', 'Session3', 'Session4', 'Session5']
+    dir_names = ['Session1', 'Session2', 'Session3', 'Session4', 'Session5']
 
     ignore_dict = {}  # map 'id' to 'label'
     # TODO - store label according order of transcription
@@ -344,25 +339,38 @@ def data_reader():
         #             wav_data = read(ses_utter_path)
         #         except:
         #             print(ses_utter_path)
-        return utter_ids, utter_labels, utter_speakers, utter_texts
+    return utter_ids, utter_labels, utter_speakers, utter_texts
 
 
 
 if __name__ == '__main__':
     # define dims of features
-    d_t = 100  # text
-    d_v = 512  # visual
-    d_a = 100  # audio
+    # d_t = 100  # text
+    # d_v = 512  # visual
+    # d_a = 100  # audio
+    #
+    # utter_ids, utter_labels, utter_speakers, utter_texts = data_reader()
+    # print(len(utter_texts.keys()))
+    #
+    # #
+    # text_feature_extractor = TextFeatureExtractor()
+    # utter_text_features = {}
+    # for k, v in utter_texts.items():
+    #     res = text_feature_extractor.get_text_feature(v)
+    #     utter_text_features[k] = res
+    #
+    path = './IEMOCAP_features/text_feature.pkl'
 
-    utter_ids, utter_labels, utter_speakers, utter_texts = data_reader()
+    # with open(path, 'wb') as f:
+    #     pickle.dump(utter_text_features, f)
 
-    text_feature_extractor = TextFeatureExtractor()
-    utter_text_features = {}
-    for k, v in utter_texts.items():
-        res = text_feature_extractor.get_text_feature(v)
-        utter_text_features[k] = v
-    print(len(utter_texts.keys()))
-    print(len(utter_texts.keys()))
+    temp = pickle.load(open(path, 'rb'), encoding='latin1')
+    print(len(temp.keys()))
+    # print(len(temp.keys()))
+    # print(list(temp.values())[0])
+
+    # print(len(utter_texts.keys()))
+    # print(len(utter_texts.keys()))
 
     # for utters in list(utter_texts.values())[:1]:
     #     res = text_feature_extractor.get_text_feature(utters)
@@ -370,8 +378,27 @@ if __name__ == '__main__':
     #     print(res[0])
 
 
-    # pkl_path = './IEMOCAP_features/IEMOCAP_features_raw.pkl'
-    # videoIDs, videoSpeakers, videoLabels, _, _, _, videoSentence, trainVid, testVid = pickle.load(open(pkl_path, 'rb'),
-    #                                                                                  encoding='latin1')
+    pkl_path = './IEMOCAP_features/IEMOCAP_features_raw.pkl'
+    videoIDs, videoSpeakers, videoLabels, videoText, videoAudio, videoVisual, videoSentence, trainVid, testVid = pickle.load(open(pkl_path, 'rb'),
+                                                                                 encoding='latin1')
+
+    print(len(videoText.keys()))
+
+    # print(list(temp.values())[0][0])
+    # print(list(videoText.values())[0][0])
+    for k, v in videoText.items():
+        my_v = list(temp[k])
+        og_v = list(v)
+        og_av = list(videoAudio[k])
+        og_vv = list(videoVisual[k])
+        for idx, x in enumerate(my_v):
+            print(sum(x))
+            print(sum(og_v[idx]))
+            print(sum(og_av[idx]))
+            print(sum(og_vv[idx]))
+
     # print(videoSentence)
-    # print([x for x in testVid])
+    # for k, v in videoText.items():
+    #     print(len(v))
+    #     print(len(v[0]))
+    # print(videoSentence)
