@@ -2,11 +2,12 @@ import torch
 import numpy as np
 import pandas as pd
 from torch.nn import MaxPool1d
-from transformers import RobertaModel, RobertaPreTrainedModel, RobertaTokenizer, RobertaConfig, Wav2Vec2FeatureExtractor, Wav2Vec2CTCTokenizer
+from transformers import RobertaModel, RobertaPreTrainedModel, RobertaTokenizer, RobertaConfig, \
+    Wav2Vec2FeatureExtractor, Wav2Vec2CTCTokenizer, Wav2Vec2Processor, Wav2Vec2Model
 from os import listdir
 import os
 from os.path import isfile, join
-from scipy.io.wavfile import read
+from scipy.io import wavfile
 import re
 from dataloader import IEMOCAPDataset
 import pickle
@@ -82,8 +83,41 @@ class RobertaExtractor(RobertaPreTrainedModel):
         return outputs
 
 class AudioFeatureExtractor(object):
-    def __init__(self):
-        self.tokenizer = Wav2Vec2CTCTokenizer()
+    def __init__(self, config='wav2vec2-base-960h', feature_dim=100, sampling_rate=16000):
+        model_dict = {
+            # Pre-trained
+            'wav2vec2-base': 'facebook/wav2vec2-base',
+            'wav2vec2-large': {'name': 'facebook/wav2vec2-large', 'revision': '85c73b1a7c1ee154fd7b06634ca7f42321db94db'},
+            # March 11, 2021 version: https://huggingface.co/facebook/wav2vec2-large/commit/85c73b1a7c1ee154fd7b06634ca7f42321db94db
+            'wav2vec2-large-lv60': 'facebook/wav2vec2-large-lv60',
+            'wav2vec2-large-xlsr-53': {'name': 'facebook/wav2vec2-large-xlsr-53',
+                                       'revision': '8e86806e53a4df405405f5c854682c785ae271da'},
+            # May 6, 2021 version: https://huggingface.co/facebook/wav2vec2-large-xlsr-53/commit/8e86806e53a4df405405f5c854682c785ae271da
+
+            # Fine-tuned
+            'wav2vec2-base-960h': 'facebook/wav2vec2-base-960h',
+            'wav2vec2-large-960h': 'facebook/wav2vec2-large-960h',
+            'wav2vec2-large-960h-lv60': 'facebook/wav2vec2-large-960h-lv60',
+            'wav2vec2-large-960h-lv60-self': 'facebook/wav2vec2-large-960h-lv60-self',
+            'wav2vec2-large-xlsr-53-english': 'jonatasgrosman/wav2vec2-large-xlsr-53-english',
+            'wav2vec2-large-xlsr-53-tamil': 'manandey/wav2vec2-large-xlsr-tamil'
+        }
+        # self.tokenizer = Wav2Vec2CTCTokenizer()
+        # self.extractor = Wav2Vec2FeatureExtractor(feature_dim=feature_dim, sampling_rate=sampling_rate)
+        # self.processor = Wav2Vec2Processor(self.extractor, self.tokenizer)
+        self.model = Wav2Vec2Model.from_pretrained(model_dict[config])
+        self.processor = Wav2Vec2Processor.from_pretrained(model_dict[config])
+        self.sampling_rate = sampling_rate
+
+    def get_audio_feature(self, audio):
+        print('1')
+        input = self.processor(audio, sampling_rate=self.sampling_rate, return_tensors='pt', padding=True)
+        print('2')
+        with torch.no_grad():
+            outputs = self.model(**input)
+
+        print(outputs.extract_features)
+        return outputs.extract_features
 
 class TextFeatureExtractor(object):
     def __init__(self, config='roberta-base', batch_size=30, kernel_size=4, stride=4):
@@ -119,7 +153,7 @@ class TextFeatureExtractor(object):
             for data in loader:
                 # print('mark 4')
                 # print('===')
-                # print(data)
+                print(data)
                 # print(len(data))
                 encodings = self.tokenizer(data, return_tensors='pt', padding=True, truncation=True,
                                            max_length=256)
@@ -186,7 +220,7 @@ def data_reader():
     path = './raw_data/IEMOCAP_full_release'
 
     dir_names = ['Session1']
-    dir_names = ['Session1', 'Session2', 'Session3', 'Session4', 'Session5']
+    # dir_names = ['Session1', 'Session2', 'Session3', 'Session4', 'Session5']
 
     ignore_dict = {}  # map 'id' to 'label'
     # TODO - store label according order of transcription
@@ -195,6 +229,7 @@ def data_reader():
     utter_labels = {}
     utter_speakers = {}
     utter_texts = {}
+    utter_audio = {}
 
     # iter sessions
     for dir_name in dir_names:
@@ -276,7 +311,7 @@ def data_reader():
                         continue
                     time = re.sub(r'[\[\]:]', '', temp[1]).split('-')
                     s_time, e_time = float(time[0]), float(time[1])
-                    text = temp[2]
+                    text = re.sub(r'\n', '', temp[2])
 
                     # TODO - implement text feature extraction
                     # text_feature = text_extractor(text)
@@ -322,6 +357,28 @@ def data_reader():
             #     print(utter_sentences[key_word])
             #     print(videoSentence[key_word])
 
+
+            ### read wav
+            wav_root_path = path + '/' + dir_name + '/sentences/wav'
+            wav_dir_names = listdir(wav_root_path)
+            u_audios = []
+            for wav_dir in wav_dir_names:
+                if wav_dir.startswith('.'):
+                    continue
+                wav_file_names = listdir(wav_root_path + '/' + wav_dir)
+                for wav_file in wav_file_names:
+                    if wav_file.startswith('.') or wav_file.endswith('.pk'):
+                        continue
+                    wav_file_path = wav_root_path + '/' + wav_dir + '/' + wav_file
+                    # try:
+                    data = wavfile.read(wav_file_path)
+                    u_audios.append(data[1].astype('float64'))
+            utter_audio[key_word] = u_audios
+
+                    # except:
+                    #     print('oops')
+                    #     print(wav_file_path)
+            print('end')
         # iter utterances wav file
 
         # file_names = listdir(wav_path)
@@ -339,7 +396,7 @@ def data_reader():
         #             wav_data = read(ses_utter_path)
         #         except:
         #             print(ses_utter_path)
-    return utter_ids, utter_labels, utter_speakers, utter_texts
+    return utter_ids, utter_labels, utter_speakers, utter_texts, utter_audio
 
 
 
@@ -348,29 +405,31 @@ if __name__ == '__main__':
     # d_t = 100  # text
     # d_v = 512  # visual
     # d_a = 100  # audio
-    #
-    # utter_ids, utter_labels, utter_speakers, utter_texts = data_reader()
-    # print(len(utter_texts.keys()))
-    #
-    # #
+
+    utter_ids, utter_labels, utter_speakers, utter_texts, utter_audio = data_reader()
+
+    # text feature
     # text_feature_extractor = TextFeatureExtractor()
     # utter_text_features = {}
     # for k, v in utter_texts.items():
     #     res = text_feature_extractor.get_text_feature(v)
     #     utter_text_features[k] = res
-    #
-    path = './IEMOCAP_features/text_feature.pkl'
+
+    # audio feature
+    audio_feature_extractor = AudioFeatureExtractor()
+    utter_audio_features = {}
+    for k, v in utter_audio.items():
+        res = audio_feature_extractor.get_audio_feature(v)
+        utter_audio_features[k] = res
+
+
+    # path = './IEMOCAP_features/text_feature.pkl'
 
     # with open(path, 'wb') as f:
     #     pickle.dump(utter_text_features, f)
 
-    temp = pickle.load(open(path, 'rb'), encoding='latin1')
-    print(len(temp.keys()))
+    # temp = pickle.load(open(path, 'rb'), encoding='latin1')
     # print(len(temp.keys()))
-    # print(list(temp.values())[0])
-
-    # print(len(utter_texts.keys()))
-    # print(len(utter_texts.keys()))
 
     # for utters in list(utter_texts.values())[:1]:
     #     res = text_feature_extractor.get_text_feature(utters)
@@ -378,24 +437,24 @@ if __name__ == '__main__':
     #     print(res[0])
 
 
-    pkl_path = './IEMOCAP_features/IEMOCAP_features_raw.pkl'
-    videoIDs, videoSpeakers, videoLabels, videoText, videoAudio, videoVisual, videoSentence, trainVid, testVid = pickle.load(open(pkl_path, 'rb'),
-                                                                                 encoding='latin1')
-
-    print(len(videoText.keys()))
-
-    # print(list(temp.values())[0][0])
-    # print(list(videoText.values())[0][0])
-    for k, v in videoText.items():
-        my_v = list(temp[k])
-        og_v = list(v)
-        og_av = list(videoAudio[k])
-        og_vv = list(videoVisual[k])
-        for idx, x in enumerate(my_v):
-            print(sum(x))
-            print(sum(og_v[idx]))
-            print(sum(og_av[idx]))
-            print(sum(og_vv[idx]))
+    # pkl_path = './IEMOCAP_features/IEMOCAP_features_raw.pkl'
+    # videoIDs, videoSpeakers, videoLabels, videoText, videoAudio, videoVisual, videoSentence, trainVid, testVid = pickle.load(open(pkl_path, 'rb'),
+    #                                                                              encoding='latin1')
+    #
+    # print(len(videoText.keys()))
+    #
+    # # print(list(temp.values())[0][0])
+    # # print(list(videoText.values())[0][0])
+    # for k, v in videoText.items():
+    #     my_v = list(temp[k])
+    #     og_v = list(v)
+    #     og_av = list(videoAudio[k])
+    #     og_vv = list(videoVisual[k])
+    #     for idx, x in enumerate(my_v):
+    #         print(sum(x))
+    #         print(sum(og_v[idx]))
+    #         print(sum(og_av[idx]))
+    #         print(sum(og_vv[idx]))
 
     # print(videoSentence)
     # for k, v in videoText.items():
