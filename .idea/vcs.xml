@@ -4,5 +4,6 @@
     <mapping directory="$PROJECT_DIR$" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/DialogueCRN" vcs="Git" />
     <mapping directory="$PROJECT_DIR$/conv-emotion" vcs="Git" />
+    <mapping directory="$PROJECT_DIR$/conv-emotion/DialogueRNN/3D-ResNets-PyTorch" vcs="Git" />
   </component>
 </project>
