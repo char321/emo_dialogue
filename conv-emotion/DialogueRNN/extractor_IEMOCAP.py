@@ -485,9 +485,9 @@ if __name__ == '__main__':
     # d_a = 100  # audio
 
     # dir_names = ['Session1', 'Session2', 'Session3', 'Session4', 'Session5']
-    dir_names = ['Session1']
-    data_reader = DataReader(dir_names)
-    _, _, _, _, utter_audio = data_reader.get_data()
+    # dir_names = ['Session1']
+    # data_reader = DataReader(dir_names)
+    # _, _, _, _, utter_audio = data_reader.get_data()
 
 
     # text feature
@@ -522,9 +522,34 @@ if __name__ == '__main__':
     # print(features)
     # print(features.shape)
 
-    #
-    # densenet = models.densenet121(pretrained=True)
-    # for p in densenet.
+
+    resnet = models.densenet121(pretrained=True)
+    num_ftrs_resnet = resnet.classifier.in_features
+    for p in resnet.parameters():
+        p.requires_grad = False
+    resnet.classifier = nn.Flatten()
+
+    img = torch.Tensor(1, 3, 224, 224).normal_()  # random image
+    img_var = Variable(img)  # assign it to a variable
+    features_var = resnet(img_var)  # get the output from the last hidden layer of the pretrained resnet
+    features = features_var.data  # get the tensor out of the variable
+
+    print(features)
+    print(features.shape)
+
+    resnet152 = models.densenet121(pretrained=True)
+    modules = list(resnet152.children())[:-1] # remove the last layer
+    resnet152 = nn.Sequential(*modules)
+    for p in resnet152.parameters():
+        p.requires_grad = False
+
+    img = torch.Tensor(1, 3, 224, 224).normal_()  # random image
+    img_var = Variable(img)  # assign it to a variable
+    features_var = resnet152(img_var)  # get the output from the last hidden layer of the pretrained resnet
+    features = features_var.data  # get the tensor out of the variable
+
+    print(features)
+    print(features.shape)
 
     # path = './IEMOCAP_features/text_feature.pkl'
 
