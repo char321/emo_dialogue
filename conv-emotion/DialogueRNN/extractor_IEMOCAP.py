@@ -1,29 +1,21 @@
-import torch
-import numpy as np
-import pandas as pd
-from torch.nn import MaxPool1d
-from transformers import RobertaModel, RobertaPreTrainedModel, RobertaTokenizer, RobertaConfig, \
-    Wav2Vec2FeatureExtractor, Wav2Vec2CTCTokenizer, Wav2Vec2Processor, Wav2Vec2Model
-from os import listdir
 import os
-from os.path import isfile, join
-from scipy.io import wavfile
 import re
-# from dataloader import IEMOCAPDataset
-import pickle
-import collections
-import operator
-from torch.utils.data import Dataset, DataLoader
-from tqdm import tqdm
-import pickle
-from moviepy.video.io.ffmpeg_tools import ffmpeg_extract_subclip
-from moviepy.video.io.VideoFileClip import VideoFileClip
 import cv2
+import operator
+import torch
 import torch.nn as nn
+import numpy as np
+from tqdm import tqdm
+# from dataloader import IEMOCAPDataset
+from torch.utils.data import Dataset, DataLoader
 from torchvision import models
 from torch.autograd import Variable
-from torchvision.models.feature_extraction import get_graph_node_names
-from torchvision.models.feature_extraction import create_feature_extractor
+from os import listdir
+from scipy.io import wavfile
+from moviepy.video.io.VideoFileClip import VideoFileClip
+from transformers import RobertaModel, RobertaPreTrainedModel, RobertaTokenizer, RobertaConfig, \
+    Wav2Vec2FeatureExtractor, Wav2Vec2CTCTokenizer, Wav2Vec2Processor, Wav2Vec2Model
+
 
 class TextDataset(Dataset):
     def __init__(self, tokenizer, utters):
@@ -187,8 +179,39 @@ class AudioFeatureExtractor(object):
 
 class VideoFeatureExtractor(object):
     def __init__(self):
-        pass
+        densenet = models.densenet121(pretrained=True)
+        num_ftrs = densenet.classifier.in_features
+        print(num_ftrs)
+        for p in densenet.parameters():
+            p.requires_grad = False
+        densenet.classifier = nn.Flatten()
 
+        self.densenet = densenet
+
+        # resnet152 = models.densenet121(pretrained=True)
+        # modules = list(resnet152.children())[:-1]  # remove the last layer
+        # resnet152 = nn.Sequential(*modules)
+        # for p in resnet152.parameters():
+        #     p.requires_grad = False
+        #
+        # img = torch.Tensor(1, 3, 224, 224).normal_()  # random image
+        # img_var = Variable(img)  # assign it to a variable
+        # features_var = resnet152(img_var)  # get the output from the last hidden layer of the pretrained resnet
+        # features = features_var.data  # get the tensor out of the variable
+        #
+        # print(features)
+        # print(features.shape)
+
+    def get_video_features(self, video_frames, type='mean'):
+        img_var = Variable(video_frames)
+        features_var = self.densenet(img_var)  # get the output from the last hidden layer of the pretrained resnet
+        features = features_var.data  # get the tensor out of the variable
+
+        if type == 'mean':
+            res = torch.mean(features, 0, keepdims=True)
+        if type == 'max':
+            res = torch.max(features, 0, keepdims=True)
+        return res
 
 
 class DataReader():
@@ -506,50 +529,12 @@ if __name__ == '__main__':
     #     utter_audio_features[k] = res
 
     # video feature
-    # video_feature_extractor = VideoFeatureExtractor()
-
-    # densenet121 = models.densenet121(pretrained=True)
-    # modules = list(densenet121.children())[:-1]
-    # densenet121 = nn.Sequential(*modules)
-    # for p in densenet121.parameters():
-    #     p.requires_grad = False
-    #
-    # img = torch.Tensor(1, 3, 224, 224).normal_()  # random image
-    # img_var = Variable(img)  # assign it to a variable
-    # features_var = densenet121(img_var)  # get the output from the last hidden layer of the pretrained resnet
-    # features = features_var.data  # get the tensor out of the variable
-    #
-    # print(features)
-    # print(features.shape)
-
-
-    resnet = models.densenet121(pretrained=True)
-    num_ftrs_resnet = resnet.classifier.in_features
-    for p in resnet.parameters():
-        p.requires_grad = False
-    resnet.classifier = nn.Flatten()
-
-    img = torch.Tensor(1, 3, 224, 224).normal_()  # random image
-    img_var = Variable(img)  # assign it to a variable
-    features_var = resnet(img_var)  # get the output from the last hidden layer of the pretrained resnet
-    features = features_var.data  # get the tensor out of the variable
-
+    video_feature_extractor = VideoFeatureExtractor()
+    frames = torch.Tensor(3, 3, 224, 224).normal_()  # random image
+    features = video_feature_extractor.get_video_features(frames)
     print(features)
     print(features.shape)
 
-    resnet152 = models.densenet121(pretrained=True)
-    modules = list(resnet152.children())[:-1] # remove the last layer
-    resnet152 = nn.Sequential(*modules)
-    for p in resnet152.parameters():
-        p.requires_grad = False
-
-    img = torch.Tensor(1, 3, 224, 224).normal_()  # random image
-    img_var = Variable(img)  # assign it to a variable
-    features_var = resnet152(img_var)  # get the output from the last hidden layer of the pretrained resnet
-    features = features_var.data  # get the tensor out of the variable
-
-    print(features)
-    print(features.shape)
 
     # path = './IEMOCAP_features/text_feature.pkl'
 
