@@ -1,10 +1,12 @@
 import os
+import pickle
 import re
 import cv2
 import operator
 import torch
 import torch.nn as nn
 import numpy as np
+import json
 from tqdm import tqdm
 # from dataloader import IEMOCAPDataset
 from torch.utils.data import Dataset, DataLoader
@@ -144,7 +146,8 @@ class TextFeatureExtractor(object):
 
 
 class AudioFeatureExtractor(object):
-    def __init__(self, config='wav2vec2-base-960h', feature_dim=100, sampling_rate=16000):
+    def __init__(self, cuda=False, config='wav2vec2-base', feature_dim=100, sampling_rate=16000):
+
         model_dict = {
             # Pre-trained
             'wav2vec2-base': 'facebook/wav2vec2-base',
@@ -163,15 +166,20 @@ class AudioFeatureExtractor(object):
             'wav2vec2-large-xlsr-53-english': 'jonatasgrosman/wav2vec2-large-xlsr-53-english',
             'wav2vec2-large-xlsr-53-tamil': 'manandey/wav2vec2-large-xlsr-tamil'
         }
-        # self.tokenizer = Wav2Vec2CTCTokenizer()
-        # self.extractor = Wav2Vec2FeatureExtractor(feature_dim=feature_dim, sampling_rate=sampling_rate)
-        # self.processor = Wav2Vec2Processor(self.extractor, self.tokenizer)
-        self.model = Wav2Vec2Model.from_pretrained(model_dict[config])
+        model = Wav2Vec2Model.from_pretrained(model_dict[config])
         self.processor = Wav2Vec2Processor.from_pretrained(model_dict[config])
+        self.cuda = cuda
+        if self.cuda:
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            self.model = model.to(device)
         self.sampling_rate = sampling_rate
 
     def get_audio_feature(self, audio):
         input = self.processor(audio, sampling_rate=self.sampling_rate, return_tensors='pt', padding=True)
+        if self.cuda:
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            input = input.to(device)
+
         with torch.no_grad():
             outputs = self.model(**input)
         return outputs.extract_features
@@ -214,14 +222,14 @@ class VideoFeatureExtractor(object):
         return res
 
 
-class DataReader():
+class DataReader(object):
 
-    def __init__(self, dir_names, root_path='./raw_data/IEMOCAP_full_release'):
+    def __init__(self, dir_names, root_path='./raw_data/IEMOCAP_full_release', process_path=None):
         self.dir_names = dir_names
         self.root_path = root_path
+        self.process_path = root_path if type(None) == type(process_path) else process_path
         self.label_map = {'hap': 0, 'sad': 1, 'neu': 2, 'ang': 3, 'exc': 4, 'fru': 5}
         # ignore label not in the mapping dict
-        # label_map = {'hap': 0, 'sad': 1, 'neu': 2, 'ang': 3, 'exc': 4, 'fru': 5, 'sur': 0}
         self.ignore_dict = {}  # map 'id' to 'label'
 
     def assign_majority(self, e1, e2, e3, e4):
@@ -357,18 +365,41 @@ class DataReader():
             if wav_file.startswith('.') or wav_file.endswith('.pk'):
                 continue
             wav_file_path = audio_root_path + '/' + wav_dir + '/' + wav_file
-            # try:
             data = wavfile.read(wav_file_path)
+            print(data)
             u_audios.append(data[1].astype('float64'))
 
         return u_audios
 
-    def split_video_file(self, video_root_path, f_name, u_id, s_time, e_time):
-        # ffmpeg_extract_subclip(video_file_path, s_time, e_time, targetname=target_name)
-        # print(target_name + '   ' + str(s_time) + '-' + str(e_time))
+    def save_audio_pkl(self, utter_audio, pkl_name='utter_audio.pkl'):
+        audio_pkl_path = self.process_path + '/read'
+        if not os.path.isdir(audio_pkl_path):
+            os.mkdir(audio_pkl_path)
+        f = open(audio_pkl_path + '/' + pkl_name, 'wb')
+        pickle.dump(utter_audio, f)
+        f.close()
+
+    def read_audio_pkl(self, pkl_name='utter_audio.pkl'):
+        audio_pkl_path = self.process_path + '/read/' + pkl_name
+        utter_audio = pickle.load(open(audio_pkl_path, 'rb'))
+        new_dict = {}
+        for k, v in utter_audio.items():
+            # print(type(v))
+            # print(type(v[0]))
+            new_dict[k] = [np.array(x, dtype=np.float) for x in v]
+
+        return new_dict
+
+    def split_video_file(self, video_root_path, dir_name, f_name, u_id, s_time, e_time):
         avi_name = re.sub('.txt', '.avi', f_name)
         video_file_path = video_root_path + '/' + avi_name
-        target_file_path = video_root_path + '/split/' + u_id + '.mp4'
+
+        # check if the directory exist
+        process_file_path = self.process_path + '/split/' + dir_name + '/' + re.sub('.txt', '', f_name)
+        if not os.path.isdir(process_file_path):
+            os.mkdir(process_file_path)
+
+        target_file_path = process_file_path + '/' + u_id + '.mp4'
 
         with VideoFileClip(video_file_path) as video:
             s_time = s_time if float(s_time) >= float(video.start) else float(video.start)
@@ -376,7 +407,7 @@ class DataReader():
             new = video.subclip(s_time, e_time)
             new.write_videofile(target_file_path, audio_codec='aac')
 
-    def read_video_file(self, video_root_path, u_id):
+    def read_video_file(self, dir_name, f_name, u_id):
         # only care about current speaker (not listener)
         print(u_id)
         prefix = u_id.split('_')[0]
@@ -384,7 +415,7 @@ class DataReader():
         speaker_gender = 'M' if 'M' in suffix else 'F'
         left_speaker = 'M' if 'M' in prefix else 'F'
 
-        split_video_path = video_root_path + '/split/' + u_id + '.mp4'
+        split_video_path = self.process_path + '/split/' + dir_name + '/' + re.sub('.txt', '', f_name) + '/' + u_id + '.mp4'
         capture = cv2.VideoCapture(split_video_path)  # height * width * frames * channel
         height = capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
         width = capture.get(cv2.CAP_PROP_FRAME_WIDTH)
@@ -446,6 +477,7 @@ class DataReader():
             video_root_path = path + '/' + dir_name + '/dialog/avi/DivX'
 
             file_names = listdir(label_root_path)
+            count = 0
             for f_name in file_names:
                 label_file_path = label_root_path + '/' + f_name
                 if (not os.path.isfile(label_file_path)) or (f_name.startswith('.')):
@@ -480,24 +512,25 @@ class DataReader():
                 #     print(utter_sentences[key_word])
                 #     print(videoSentence[key_word])
 
-
                 ###  read audio file
-                # utter_audio[key_word] = self.read_audio_file(audio_root_path, f_name)
+                utter_audio[key_word] = self.read_audio_file(audio_root_path, f_name)
 
                 ### read video file
                 # split the video according to the start time and end time of utterance
                 # for idx, u_id in enumerate(u_ids):
+                #     count += 1
                 #     s_time = utter_s_times[key_word][idx]
                 #     e_time = utter_e_times[key_word][idx]
-                #     self.split_video_file(video_root_path, f_name, u_id, s_time, e_time)
+                #     self.split_video_file(video_root_path, dir_name, f_name, u_id, s_time, e_time)
+
 
                 # read the split video
-                for idx, u_id in enumerate(u_ids):
-                    # get left and right portions of the video
-                    self.read_video_file(video_root_path, u_id)
-
-
+                # for idx, u_id in enumerate(u_ids):
+                #     # get left and right portions of the video
+                #     self.read_video_file(video_root_path, u_id)
+        print(count)
         return utter_ids, utter_labels, utter_speakers, utter_texts, utter_audio
+
 
 
 
@@ -507,33 +540,56 @@ if __name__ == '__main__':
     # d_v = 512  # visual
     # d_a = 100  # audio
 
-    # dir_names = ['Session1', 'Session2', 'Session3', 'Session4', 'Session5']
+    # cuda = torch.cuda.is_available()
+    # if cuda:
+    #     print('Running on GPU')
+    # else:
+    #     print('Running on CPU')
+
+
+    dir_names = ['Session1', 'Session2', 'Session3', 'Session4', 'Session5']
     # dir_names = ['Session1']
-    # data_reader = DataReader(dir_names)
+    data_reader = DataReader(dir_names)
+    utter_audio = data_reader.read_audio_pkl('utter_audio.pkl')
     # _, _, _, _, utter_audio = data_reader.get_data()
 
+    # data_reader.save_audio_pkl(utter_audio, 'utter_audio.pkl')
 
-    # text feature
+    print(list(utter_audio.keys()))
+    print(len(utter_audio.values()))
+    print(utter_audio['Ses01M_impro01'])
+    print(len(utter_audio['Ses01M_impro01']))
+
+    # done - text feature
     # text_feature_extractor = TextFeatureExtractor()
     # utter_text_features = {}
     # for k, v in utter_texts.items():
     #     res = text_feature_extractor.get_text_feature(v)
     #     utter_text_features[k] = res
 
-    # audio feature
-    # audio_feature_extractor = AudioFeatureExtractor()
+    # todo - audio feature
+    # audio_feature_extractor = AudioFeatureExtractor(cuda)
     # utter_audio_features = {}
+    # count = 0
     # for k, v in utter_audio.items():
+    #     if count == 1:
+    #         break
+    #     # res = audio_feature_extractor.get_audio_feature(v)
+    #     # print(res.shape)
+    #     # utter_audio_features[k] = res
     #     print(k)
-    #     res = audio_feature_extractor.get_audio_feature(v)
-    #     utter_audio_features[k] = res
+    #     print(v)
+    #     print(len(v))
+    #     print(len(v[0]))
+    #     print(len(v[1]))
+    #     count += 1
 
-    # video feature
-    video_feature_extractor = VideoFeatureExtractor()
-    frames = torch.Tensor(3, 3, 224, 224).normal_()  # random image
-    features = video_feature_extractor.get_video_features(frames)
-    print(features)
-    print(features.shape)
+    # todo - video feature
+    # video_feature_extractor = VideoFeatureExtractor()
+    # frames = torch.Tensor(3, 3, 224, 224).normal_()  # random image
+    # features = video_feature_extractor.get_video_features(frames)
+    # print(features)
+    # print(features.shape)
 
 
     # path = './IEMOCAP_features/text_feature.pkl'

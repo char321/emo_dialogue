@@ -55,7 +55,7 @@ class AVECDataset(Dataset):
     def __init__(self, path, train=True):
         self.videoIDs, self.videoSpeakers, self.videoLabels, self.videoText,\
             self.videoAudio, self.videoVisual, self.videoSentence,\
-            self.trainVid, self.testVid = pickle.load(open(path, 'rb'),encoding='latin1')
+            self.trainVid, self.testVid = pickle.load(open(path, 'rb'), encoding='latin1')
 
         self.keys = [x for x in (self.trainVid if train else self.testVid)]
 
