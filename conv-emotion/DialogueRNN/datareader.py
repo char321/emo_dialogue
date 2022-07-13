@@ -12,8 +12,9 @@ from moviepy.video.io.VideoFileClip import VideoFileClip
 
 class DataReader(object):
 
-    def __init__(self, dir_names, root_path='./raw_data/IEMOCAP_full_release', process_path=None):
-        self.dir_names = dir_names
+    def __init__(self, dir_name, frame_sampling_rate=1/10, root_path='./raw_data/IEMOCAP_full_release', process_path=None):
+        self.dir_name = dir_name
+        self.frame_sampling_rate = frame_sampling_rate
         self.root_path = root_path
         self.process_path = root_path if type(None) == type(process_path) else process_path
         self.label_map = {'hap': 0, 'sad': 1, 'neu': 2, 'ang': 3, 'exc': 4, 'fru': 5}
@@ -209,30 +210,37 @@ class DataReader(object):
         height = capture.get(cv2.CAP_PROP_FRAME_HEIGHT)
         width = capture.get(cv2.CAP_PROP_FRAME_WIDTH)
 
+        # default fps is 30
         video_frames = []
         # Read until video is completed
+        i = 0
+        sampling_interval = int(1 / self.frame_sampling_rate)
         while (capture.isOpened()):
             # Capture frame-by-frame
             ret, frame = capture.read()
-            if ret == True:
+            if ret == False:
+                break
+            if i % sampling_interval == 0:
+                frame = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
                 # Display the resulting frame
                 if speaker_gender == left_speaker:
                     # print('left')
-                    section = frame[int(height * (1 / 4)) + 10:int(height * (3 / 4)) - 6, 68:int(width / 2) - 68, :]
+                    section = frame[int(height * (1 / 4)) + 10:int(height * (3 / 4)) - 6, 68:int(width / 2) - 68]
                 else:
                     # print('right')
                     section = frame[int(height * (1 / 4)) + 10:int(height * (3 / 4)) - 6,
-                              int(width / 2) + 68: int(width) - 68, :]
+                              int(width / 2) + 68: int(width) - 68]
 
                 video_frames.append(section)
-
                 # cv2_imshow(section)
                 # cv2.waitKey()
-            else:
-                break
+            i += 1
 
-        video_frames = np.moveaxis(np.stack(video_frames), 3, 1)
+        video_frames = np.stack(video_frames)
+        video_frames = np.expand_dims(video_frames, axis=1)
         video_frames = video_frames.astype('float32')
+        # print(video_frames.shape)
+
         capture.release()
         cv2.destroyAllWindows()
 
@@ -246,7 +254,93 @@ class DataReader(object):
         file_names = listdir(label_root_path)
         return len(file_names)
 
-    def get_data(self, start_idx=0):
+    def get_data(self):
+        path = self.root_path
+
+        utter_ids = {}
+        utter_labels = {}
+        utter_speakers = {}
+        utter_texts = {}
+        utter_audio = {}
+        utter_s_times = {}
+        utter_e_times = {}
+        utter_speaker_frames = {}
+
+        # get label from DialogueRNN paper, so that the assigned labels can be consistent
+        # pkl_path = './IEMOCAP_features/IEMOCAP_features_raw.pkl'
+        # videoIDs, videoSpeakers, videoLabels, _, _, _, videoSentence, _, _ = pickle.load(open(pkl_path, 'rb'), encoding='latin1')
+
+        # label file root path
+        label_root_path = path + '/' + self.dir_name + '/dialog/EmoEvaluation'
+        # transcription file root path
+        transcription_root_path = path + '/' + self.dir_name + '/dialog/transcriptions'
+        # wav file root path
+        audio_root_path = path + '/' + self.dir_name + '/sentences/wav'
+        # avi file root path
+        video_root_path = path + '/' + self.dir_name + '/dialog/avi/DivX'
+
+        file_names = listdir(label_root_path)
+
+        for idx, f_name in enumerate(file_names):
+            label_file_path = label_root_path + '/' + f_name
+            if (not os.path.isfile(label_file_path)) or (f_name.startswith('.')):
+                continue
+
+            # read label file
+            self.read_label_file(label_root_path, f_name)
+
+            # read transcription file
+            u_ids, u_speakers, s_times, e_times, u_texts, u_labels = self.read_transcription_file(
+                transcription_root_path, f_name)
+
+            key_word = re.sub('.txt', '', f_name)
+            utter_ids[key_word] = u_ids
+            utter_speakers[key_word] = u_speakers
+            utter_s_times[key_word] = s_times
+            utter_e_times[key_word] = e_times
+            utter_texts[key_word] = u_texts
+            utter_labels[key_word] = u_labels
+
+            # test my obtains data vs data used in DialogueRNN
+            # video_labels = videoLabels[key_word]
+            # my_labels = utter_labels[key_word]
+            # if len(my_labels) != len(video_labels):
+            #     print(f_name)
+            #     print(str(count) + '-' + str(len(my_labels)) + '-' + str(len(video_labels)))
+            #     print(my_labels)
+            #     print(video_labels)
+            #     print(utter_ids[key_word])
+            #     print(videoIDs[key_word])
+            #     print(utter_speakers[key_word])
+            #     print(videoSpeakers[key_word])
+            #     print(utter_sentences[key_word])
+            #     print(videoSentence[key_word])
+
+            ###  read audio file
+            # utter_audio[key_word] = self.read_audio_file(audio_root_path, f_name)
+
+            ### read video file
+            # split the video according to the start time and end time of utterance
+            # for idx, u_id in enumerate(u_ids):
+            #     count += 1
+            #     s_time = utter_s_times[key_word][idx]
+            #     e_time = utter_e_times[key_word][idx]
+            #     self.split_video_file(video_root_path, dir_name, f_name, u_id, s_time, e_time)
+
+            # read the split video
+            print(f_name)
+            temp = []
+
+            for idx, u_id in enumerate(u_ids):
+                # get left and right portions of the video
+                res = self.read_video_file(self.dir_name, f_name, u_id)
+                # print(res)
+                temp.append(res)
+            utter_speaker_frames[key_word] = temp
+
+        return utter_ids, utter_labels, utter_speakers, utter_texts, utter_audio, utter_speaker_frames
+
+    def get_partial_data(self, start_idx=0):
         path = self.root_path
 
         utter_ids = {}
@@ -259,83 +353,65 @@ class DataReader(object):
         utter_speaker_frames = {}
         ram_limit = 3
 
-        # iter sessions
-        for dir_name in self.dir_names:
-            # get label from DialogueRNN paper, so that the assigned labels can be consistent
-            # pkl_path = './IEMOCAP_features/IEMOCAP_features_raw.pkl'
-            # videoIDs, videoSpeakers, videoLabels, _, _, _, videoSentence, _, _ = pickle.load(open(pkl_path, 'rb'), encoding='latin1')
+        # get label from DialogueRNN paper, so that the assigned labels can be consistent
+        # pkl_path = './IEMOCAP_features/IEMOCAP_features_raw.pkl'
+        # videoIDs, videoSpeakers, videoLabels, _, _, _, videoSentence, _, _ = pickle.load(open(pkl_path, 'rb'), encoding='latin1')
 
-            # label file root path
-            label_root_path = path + '/' + dir_name + '/dialog/EmoEvaluation'
-            # transcription file root path
-            transcription_root_path = path + '/' + dir_name + '/dialog/transcriptions'
-            # wav file root path
-            audio_root_path = path + '/' + dir_name + '/sentences/wav'
-            # avi file root path
-            video_root_path = path + '/' + dir_name + '/dialog/avi/DivX'
+        # label file root path
+        label_root_path = path + '/' + self.dir_name + '/dialog/EmoEvaluation'
+        # transcription file root path
+        transcription_root_path = path + '/' + self.dir_name + '/dialog/transcriptions'
+        # wav file root path
+        audio_root_path = path + '/' + self.dir_name + '/sentences/wav'
+        # avi file root path
+        video_root_path = path + '/' + self.dir_name + '/dialog/avi/DivX'
 
-            file_names = listdir(label_root_path)
+        file_names = listdir(label_root_path)
 
-            for idx, f_name in enumerate(file_names):
-                if idx < start_idx:
-                    continue
-                if idx >= start_idx + ram_limit:
-                    break
-                label_file_path = label_root_path + '/' + f_name
-                if (not os.path.isfile(label_file_path)) or (f_name.startswith('.')):
-                    continue
+        for idx, f_name in enumerate(file_names):
+            if idx < start_idx:
+                continue
+            if idx >= start_idx + ram_limit:
+                break
+            label_file_path = label_root_path + '/' + f_name
+            if (not os.path.isfile(label_file_path)) or (f_name.startswith('.')):
+                continue
 
-                # read label file
-                self.read_label_file(label_root_path, f_name)
+            # read label file
+            self.read_label_file(label_root_path, f_name)
 
-                # read transcription file
-                u_ids, u_speakers, s_times, e_times, u_texts, u_labels = self.read_transcription_file(
-                    transcription_root_path, f_name)
+            # read transcription file
+            u_ids, u_speakers, s_times, e_times, u_texts, u_labels = self.read_transcription_file(
+                transcription_root_path, f_name)
 
-                key_word = re.sub('.txt', '', f_name)
-                utter_ids[key_word] = u_ids
-                utter_speakers[key_word] = u_speakers
-                utter_s_times[key_word] = s_times
-                utter_e_times[key_word] = e_times
-                utter_texts[key_word] = u_texts
-                utter_labels[key_word] = u_labels
+            key_word = re.sub('.txt', '', f_name)
+            utter_ids[key_word] = u_ids
+            utter_speakers[key_word] = u_speakers
+            utter_s_times[key_word] = s_times
+            utter_e_times[key_word] = e_times
+            utter_texts[key_word] = u_texts
+            utter_labels[key_word] = u_labels
 
-                # test my obtains data vs data used in DialogueRNN
-                # video_labels = videoLabels[key_word]
-                # my_labels = utter_labels[key_word]
-                # if len(my_labels) != len(video_labels):
-                #     print(f_name)
-                #     print(str(count) + '-' + str(len(my_labels)) + '-' + str(len(video_labels)))
-                #     print(my_labels)
-                #     print(video_labels)
-                #     print(utter_ids[key_word])
-                #     print(videoIDs[key_word])
-                #     print(utter_speakers[key_word])
-                #     print(videoSpeakers[key_word])
-                #     print(utter_sentences[key_word])
-                #     print(videoSentence[key_word])
+            ###  read audio file
+            # utter_audio[key_word] = self.read_audio_file(audio_root_path, f_name)
 
-                ###  read audio file
-                # utter_audio[key_word] = self.read_audio_file(audio_root_path, f_name)
+            ### read video file
+            # split the video according to the start time and end time of utterance
+            # for idx, u_id in enumerate(u_ids):
+            #     count += 1
+            #     s_time = utter_s_times[key_word][idx]
+            #     e_time = utter_e_times[key_word][idx]
+            #     self.split_video_file(video_root_path, dir_name, f_name, u_id, s_time, e_time)
 
-                ### read video file
-                # split the video according to the start time and end time of utterance
-                # for idx, u_id in enumerate(u_ids):
-                #     count += 1
-                #     s_time = utter_s_times[key_word][idx]
-                #     e_time = utter_e_times[key_word][idx]
-                #     self.split_video_file(video_root_path, dir_name, f_name, u_id, s_time, e_time)
+            # read the split video
+            print(f_name)
+            temp = []
 
-                # read the split video
-                print(f_name)
-                temp = []
-
-                for idx, u_id in enumerate(u_ids):
-                    # get left and right portions of the video
-                    res = self.read_video_file(dir_name, f_name, u_id)
-                    # print(res)
-                    temp.append(res)
-                utter_speaker_frames[key_word] = temp
+            for idx, u_id in enumerate(u_ids):
+                # get left and right portions of the video
+                res = self.read_video_file(self.dir_name, f_name, u_id)
+                # print(res)
+                temp.append(res)
+            utter_speaker_frames[key_word] = temp
 
         return utter_ids, utter_labels, utter_speakers, utter_texts, utter_audio, utter_speaker_frames
-
