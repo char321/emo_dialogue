@@ -1,23 +1,61 @@
+import numpy as np
+
 from extractor_IEMOCAP import *
 from datareader import DataReader
+import pickle
 
 if __name__ == '__main__':
-    # define dims of features
-    # d_t = 100  # text
-    # d_v = 512  # visual
-    # d_a = 100  # audio
+    cuda = torch.cuda.is_available()
+    if cuda:
+        print('Running on GPU')
+    else:
+        print('Running on CPU')
 
-    # cuda = torch.cuda.is_available()
-    # if cuda:
-    #     print('Running on GPU')
-    # else:
-    #     print('Running on CPU')
+    root_path = '/Users/chenyu/PycharmProjects/emo/conv-emotion/DialogueRNN/raw_data/IEMOCAP_full_release'
+    process_path = '/Users/chenyu/PycharmProjects/emo/conv-emotion/DialogueRNN/raw_data/IEMOCAP_full_release'
 
-    dir_names = ['Session1', 'Session2', 'Session3', 'Session4', 'Session5']
-    # dir_names = ['Session1']
-    data_reader = DataReader(dir_names)
-    # utter_audio = data_reader.read_audio_pkl('utter_audio.pkl')
-    _, _, _, _, _, utter_speaker_frames = data_reader.get_data()
+    pkl_path = process_path + '/read/utter_audio_og.pkl'
+    new_utter_audio = pickle.load(open(pkl_path, 'rb'))
+
+    # Audio Feature Extraction
+    utter_audio_feature = {}
+
+    for k, v in new_utter_audio.items():
+        audio_feature_extractor = AudioFeatureExtractor(False)
+        utter_audio_feature[k] = audio_feature_extractor.get_batch_feature(v)
+
+    # pkl_path = './IEMOCAP_features/IEMOCAP_features_raw.pkl'
+    # videoIDs, videoSpeakers, videoLabels, videoText, videoAudio, videoVisual, videoSentence, trainVid, \
+    # testVid = pickle.load(open(pkl_path, 'rb'), encoding='latin1')
+    #
+    # for k, v in videoAudio.items():
+    #     print(v)
+
+    # dir_names = ['Session1', 'Session2', 'Session3', 'Session4', 'Session5']
+    # # dir_names = ['Session1']
+    # for dir_name in dir_names:
+    #     data_reader = DataReader(dir_name)
+    #     # utter_audio = data_reader.read_audio_pkl('utter_audio.pkl')
+    #     utter_ids, utter_labels, utter_speakers, utter_texts, _, _ = data_reader.get_data()
+    #
+    #     for k, v in utter_labels.items():
+    #         temp_v = videoLabels[k]
+    #         if not temp_v == v:
+    #             print(v)
+    #             print(temp_v)
+    #
+    #         speaker = utter_speakers[k]
+    #         temp_speaker = videoSpeakers[k]
+    #
+    #         if not temp_speaker == speaker:
+    #             print(speaker)
+    #             print(temp_speaker)
+    #
+    #         id = utter_ids[k]
+    #         temp_id = videoIDs[k]
+    #         if not temp_id == id:
+    #             print(id)
+    #             print(temp_id)
 
     # data_reader.save_audio_pkl(utter_audio, 'utter_audio.pkl')
 
@@ -70,27 +108,3 @@ if __name__ == '__main__':
     #     print(len(res))
     #     print(res[0])
 
-    # pkl_path = './IEMOCAP_features/IEMOCAP_features_raw.pkl'
-    # videoIDs, videoSpeakers, videoLabels, videoText, videoAudio, videoVisual, videoSentence, trainVid, testVid = pickle.load(open(pkl_path, 'rb'),
-    #                                                                              encoding='latin1')
-    #
-    # print(len(videoText.keys()))
-    #
-    # # print(list(temp.values())[0][0])
-    # # print(list(videoText.values())[0][0])
-    # for k, v in videoText.items():
-    #     my_v = list(temp[k])
-    #     og_v = list(v)
-    #     og_av = list(videoAudio[k])
-    #     og_vv = list(videoVisual[k])
-    #     for idx, x in enumerate(my_v):
-    #         print(sum(x))
-    #         print(sum(og_v[idx]))
-    #         print(sum(og_av[idx]))
-    #         print(sum(og_vv[idx]))
-
-    # print(videoSentence)
-    # for k, v in videoText.items():
-    #     print(len(v))
-    #     print(len(v[0]))
-    # print(videoSentence)

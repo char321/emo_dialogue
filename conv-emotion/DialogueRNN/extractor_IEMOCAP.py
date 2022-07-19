@@ -7,7 +7,7 @@ from torch.utils.data import Dataset, DataLoader
 from torchvision import models
 from torch.autograd import Variable
 from transformers import RobertaModel, RobertaPreTrainedModel, RobertaTokenizer, RobertaConfig, \
-    Wav2Vec2FeatureExtractor, Wav2Vec2CTCTokenizer, Wav2Vec2Processor, Wav2Vec2Model
+    Wav2Vec2FeatureExtractor, Wav2Vec2CTCTokenizer, Wav2Vec2Processor, Wav2Vec2Model, Wav2Vec2ForSequenceClassification
 
 
 class TextDataset(Dataset):
@@ -41,9 +41,9 @@ class TextDataset(Dataset):
 
 class RobertaExtractor(RobertaPreTrainedModel):
 
-  # Initialisation
-  # config: pre-trained model config (model name)
-  # dropout_rate: dropout rate
+    # Initialisation
+    # config: pre-trained model config (model name)
+    # dropout_rate: dropout rate
     def __init__(self, config):
         super().__init__(config)
 
@@ -81,11 +81,11 @@ class TextFeatureExtractor(object):
     def __init__(self, config='roberta-base', batch_size=30, kernel_size=4, stride=4):
         self.use_gpu = torch.cuda.is_available()
         self.tokenizer = RobertaTokenizer.from_pretrained(config)
-        # model = RobertaPreTrainedModel.from_pretrained('roberta-base')
         # self.model = model.cuda() if self.use_gpu else model
 
-        self.extractor = RobertaExtractor.from_pretrained(config)
-        # self.extractor = RobertaPreTrainedModel.from_pretrained('roberta-base')
+        extractor = RobertaExtractor.from_pretrained(config)
+        self.extractor = extractor.cuda() if self.use_gpu else extractor
+
         self.batch_size = batch_size
         self.kernel_size = kernel_size
         self.stride = stride
@@ -99,50 +99,45 @@ class TextFeatureExtractor(object):
             drop_last=False,
             pin_memory=self.use_gpu
         )
-        # print('mark 1')
-        # print(data_loader)
+
         res = []
         self.extractor.eval()
         with torch.no_grad():
             loader = tqdm(data_loader)
-            # print('mark 2')
-            # print(loader)
-            # print('mark 3')
+
             for data in loader:
-                # print('mark 4')
-                # print('===')
-                print(data)
-                # print(len(data))
-                encodings = self.tokenizer(data, return_tensors='pt', padding=True, truncation=True,
-                                           max_length=256)
-                # encodings.to(DEVICE)
+
+                # print(data)
+                # max length of utterance in the IEMOCAP is 107 (split by space)
+                encodings = self.tokenizer(data, return_tensors='pt', padding=True, max_length=128)
+                device = torch.device("cuda:0" if self.use_gpu else "cpu")
+                encodings = encodings.to(device)
 
                 output = self.extractor(**encodings)
-                # text_vector = output.last_hidden_state#[:, 0, :]
+
                 text_vector = output.pooler_output
-                pooling = torch.nn.AvgPool1d(self.kernel_size, self.stride)
-                sampled_text_vector = pooling(text_vector)
 
-                # print(torch.tensor(sampled_text_vector).shape)
+                # pooling = torch.nn.AvgPool1d(self.kernel_size, self.stride)
+                # sampled_text_vector = pooling(text_vector)
 
-                # print('mark 5')
-                # res = self.extractor(data)
-                # print('mark 5')
-                res.append(sampled_text_vector)
-        # print(len(res[0]))
-        # print(len(res[1]))
+                if self.use_gpu:
+                    res.append(text_vector.cpu())
+                else:
+                    res.append(text_vector)
+
         res = np.concatenate(res, axis=0)
-        # print(len(res))
+
         return res
 
 
 class AudioFeatureExtractor(object):
-    def __init__(self, cuda=False, config='wav2vec2-base', feature_dim=100, sampling_rate=16000):
+    def __init__(self, cuda=False, config='wav2vec2-base-960h', feature_dim=100, sampling_rate=16000):
 
         model_dict = {
             # Pre-trained
             'wav2vec2-base': 'facebook/wav2vec2-base',
-            'wav2vec2-large': {'name': 'facebook/wav2vec2-large', 'revision': '85c73b1a7c1ee154fd7b06634ca7f42321db94db'},
+            'wav2vec2-large': {'name': 'facebook/wav2vec2-large',
+                               'revision': '85c73b1a7c1ee154fd7b06634ca7f42321db94db'},
             # March 11, 2021 version: https://huggingface.co/facebook/wav2vec2-large/commit/85c73b1a7c1ee154fd7b06634ca7f42321db94db
             'wav2vec2-large-lv60': 'facebook/wav2vec2-large-lv60',
             'wav2vec2-large-xlsr-53': {'name': 'facebook/wav2vec2-large-xlsr-53',
@@ -157,27 +152,69 @@ class AudioFeatureExtractor(object):
             'wav2vec2-large-xlsr-53-english': 'jonatasgrosman/wav2vec2-large-xlsr-53-english',
             'wav2vec2-large-xlsr-53-tamil': 'manandey/wav2vec2-large-xlsr-tamil'
         }
-        model = Wav2Vec2Model.from_pretrained(model_dict[config])
-        self.processor = Wav2Vec2Processor.from_pretrained(model_dict[config])
         self.cuda = cuda
+        self.model = Wav2Vec2Model.from_pretrained(model_dict[config])
+        self.processor = Wav2Vec2Processor.from_pretrained(model_dict[config])
+        # self.model2 = Wav2Vec2ForSequenceClassification.from_pretrained(model_dict[config])
+        # bundle = torchaudio.pipelines.WAV2VEC2_BASE
+        # self.model3 = bundle.get_model()
         if self.cuda:
-            # device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
-            # self.model = model.to(device)
-            self.model = model.cuda()
+            self.model = self.model.cuda()
         self.sampling_rate = sampling_rate
 
+    def get_audio_feature_test(self, waveforms):
+        temp = []
+        for waveform in waveforms:
+            # print('---')
+            # print(getsizeof(x))
+            features, _ = self.model.extract_features(waveform)
+            res = features[-1]
+            res = torch.max(res, dim=1).values
+            # print(torch.reshape(new_res, (768,)).shape)
+            # res = torch.reshape(res, (768,))
+            # print(getsizeof(res))
+            temp.append(res)
+
+        # feature: 12 * batch size * frames * feature dimension
+        # print(features[-1].shape)
+        # TODO use this for feature extraction
+
+        return temp
+
     def get_batch_feature(self, batch):
-        input = self.processor(batch, sampling_rate=self.sampling_rate, return_tensors='pt', padding='max_length', max_length=60000)
-        for v in input:
-            print(len(v))
+        input = self.processor(batch, sampling_rate=self.sampling_rate, return_tensors='pt', padding=True)  # batch size * max length
+
+        # for v in input:
+        #     print(len(v))
         if self.cuda:
             device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
             input = input.to(device)
-            # input = torch.tensor(input)
-            # input = input.cuda()
+
         with torch.no_grad():
             outputs = self.model(**input)
-        return outputs.extract_features
+            audio_vector = outputs.extract_features
+            test = outputs.last_hidden_state
+        print('---')
+        print(test.shape)
+        print(audio_vector.shape)
+        return audio_vector
+
+    def get_batch_feature2(self, batch):
+        input = self.processor(batch, sampling_rate=self.sampling_rate, return_tensors='pt',
+                               padding=True)  # batch size * max length
+
+        # for v in input:
+        #     print(len(v))
+        if self.cuda:
+            device = torch.device("cuda:0" if torch.cuda.is_available() else "cpu")
+            input = input.to(device)
+        with torch.no_grad():
+            outputs = self.model2(**input, output_hidden_states=True)
+            test = outputs.hidden_states
+        print('---')
+        print(test.shape)
+
+        return test
 
     def get_audio_feature(self, audio, max_batch_size=32):
         res = []

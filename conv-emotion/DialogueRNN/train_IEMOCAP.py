@@ -80,6 +80,7 @@ def train_or_eval_model(model, loss_function, dataloader, epoch, cuda, optimizer
         # alpha is the attention score
         # log_prob, alpha, alpha_f, alpha_b = model(textf, q_mask, u_mask, use_att=True)  # log_prob -> seq_len * batch * n_classes
 
+        # concatenation of features as input
         log_prob, alpha, alpha_f, alpha_b = model(torch.cat((textf, acouf, visuf), dim=-1), q_mask, u_mask, use_att=True) # seq_len, batch, n_classes
 
         temp_log_prob = log_prob.transpose(0, 1).contiguous().view(-1, log_prob.size()[2])  # (batch * seq_len) * n_classes

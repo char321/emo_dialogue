@@ -1,18 +1,15 @@
 import os
-import pickle
 import re
 import cv2
 import operator
 import numpy as np
 from os import listdir
-from scipy.io import wavfile
 from moviepy.video.io.VideoFileClip import VideoFileClip
-# from google.colab.patches import cv2_imshow
-
 
 class DataReader(object):
 
-    def __init__(self, dir_name, frame_sampling_rate=1/10, root_path='./raw_data/IEMOCAP_full_release', process_path=None):
+    def __init__(self, dir_name=None, frame_sampling_rate=1 / 10, root_path='./raw_data/IEMOCAP_full_release',
+                 process_path=None):
         self.dir_name = dir_name
         self.frame_sampling_rate = frame_sampling_rate
         self.root_path = root_path
@@ -21,14 +18,21 @@ class DataReader(object):
         # ignore label not in the mapping dict
         self.ignore_dict = {}  # map 'id' to 'label'
 
+        # label file root path
+        self.label_root_path = self.root_path + '/' + self.dir_name + '/dialog/EmoEvaluation'
+        # transcription file root path
+        self.transcription_root_path = self.root_path + '/' + self.dir_name + '/dialog/transcriptions'
+        # wav file root path
+        self.audio_root_path = self.root_path + '/' + self.dir_name + '/sentences/wav'
+        # avi file root path
+        self.video_root_path = self.root_path + '/' + self.dir_name + '/dialog/avi/DivX'
+
     def assign_majority(self, e1, e2, e3, e4):
         temp_e1 = e1.split('\t')[1].replace(' ', '').split(';')
         temp_e2 = e2.split('\t')[1].replace(' ', '').split(';')
         temp_e3 = e3.split('\t')[1].replace(' ', '').split(';')
         temp_e4 = e4.split('\t')[1].replace(' ', '').split(';')
 
-        # e = e1 + e2 + e3 + e4
-        # e = temp_e1[:1] + temp_e2[:1] + temp_e3[:1] + temp_e4[:1]
         e = temp_e1 + temp_e2 + temp_e3 + temp_e4[:1]
 
         temp = {}
@@ -59,15 +63,10 @@ class DataReader(object):
             else:
                 return 'xxx'
 
-    def read_label_file(self, label_root_path, f_name):
-        label_file_path = label_root_path + '/' + f_name
+    def read_label_file(self, f_name):
+        label_file_path = self.label_root_path + '/' + f_name
         label_file = open(label_file_path, 'r')
         label_lines = label_file.readlines()
-
-        # time_to_id = {}
-        # time_to_label = {}
-        # time_to_speaker = {}
-        # time_to_sentence = {}
 
         ### generate filter mask - instance with no majority label should be ignored
         for line_idx, line in enumerate(label_lines):
@@ -95,8 +94,8 @@ class DataReader(object):
             else:
                 self.ignore_dict[temp_id] = temp_label
 
-    def read_transcription_file(self, transcription_root_path, f_name):
-        transcription_file_path = transcription_root_path + '/' + f_name
+    def read_transcription_file(self, f_name):
+        transcription_file_path = self.transcription_root_path + '/' + f_name
         transcription_file = open(transcription_file_path, 'r')
         transcription_lines = transcription_file.readlines()
 
@@ -117,13 +116,7 @@ class DataReader(object):
                     continue
                 time = re.sub(r'[\[\]:]', '', temp[1]).split('-')
                 s_time, e_time = float(time[0]), float(time[1])
-                # print(transcription_file_path)
-                # if 'Ses01M_impro04' in str(transcription_file_path):
-                #     print(str(s_time) + ' - ' + str(e_time))
                 text = re.sub(r'\n', '', temp[2])
-
-                # TODO - implement text feature extraction
-                # text_feature = text_extractor(text)
 
                 speaker = u_id.split('_')[-1][0]
 
@@ -134,8 +127,6 @@ class DataReader(object):
                 u_texts.append(text)
                 count += 1
             except:
-                # print(ses_path)
-                # print(line)
                 pass
 
         for u_id in u_ids:
@@ -145,39 +136,38 @@ class DataReader(object):
 
         return u_ids, u_speakers, s_times, e_times, u_texts, u_labels
 
-    def read_audio_file(self, audio_root_path, f_name):
+    def read_audio_file(self, f_name):
+        from scipy.io import wavfile
+
         u_audios = []
         wav_dir = re.sub('.txt', '', f_name)
-        wav_file_names = listdir(audio_root_path + '/' + wav_dir)
+        wav_file_names = listdir(self.audio_root_path + '/' + wav_dir)
+        for wav_file in wav_file_names:
+            if wav_file.startswith('.') or wav_file.endswith('.pk'):
+                continue
+            wav_file_path = self.audio_root_path + '/' + wav_dir + '/' + wav_file
+            data = wavfile.read(wav_file_path)
+            u_audios.append(data[1].astype('float32'))
+
+        return u_audios
+
+    def read_audio_file_as_waveform(self, f_name):
+        import torchaudio
+
+        u_audios = []
+        wav_dir = re.sub('.txt', '', f_name)
+        wav_file_names = listdir(self.audio_root_path + '/' + wav_dir)
         for wav_file in wav_file_names:
             # print(wav_file)
             if wav_file.startswith('.') or wav_file.endswith('.pk'):
                 continue
-            wav_file_path = audio_root_path + '/' + wav_dir + '/' + wav_file
-            data = wavfile.read(wav_file_path)
-            print(data)
-            u_audios.append(data[1].astype('float64'))
+            wav_file_path = self.audio_root_path + '/' + wav_dir + '/' + wav_file
+            waveform, sample_rate = torchaudio.load(wav_file_path)
+            # metadata = torchaudio.info(wav_file_path)
+
+            u_audios.append(waveform)
 
         return u_audios
-
-    def save_audio_pkl(self, utter_audio, pkl_name='utter_audio.pkl'):
-        audio_pkl_path = self.process_path + '/read'
-        if not os.path.isdir(audio_pkl_path):
-            os.mkdir(audio_pkl_path)
-        f = open(audio_pkl_path + '/' + pkl_name, 'wb')
-        pickle.dump(utter_audio, f)
-        f.close()
-
-    def read_audio_pkl(self, pkl_name='utter_audio.pkl'):
-        audio_pkl_path = self.process_path + '/read/' + pkl_name
-        utter_audio = pickle.load(open(audio_pkl_path, 'rb'))
-        new_dict = {}
-        for k, v in utter_audio.items():
-            # print(type(v))
-            # print(type(v[0]))
-            new_dict[k] = [x.astype('float32') for x in v]
-
-        return new_dict
 
     def split_video_file(self, video_root_path, dir_name, f_name, u_id, s_time, e_time):
         avi_name = re.sub('.txt', '.avi', f_name)
@@ -249,11 +239,6 @@ class DataReader(object):
 
         return video_frames
 
-    def get_num_of_files(self, dir_name):
-        label_root_path = self.root_path + '/' + dir_name + '/dialog/EmoEvaluation'
-        file_names = listdir(label_root_path)
-        return len(file_names)
-
     def get_data(self):
         path = self.root_path
 
@@ -270,28 +255,19 @@ class DataReader(object):
         # pkl_path = './IEMOCAP_features/IEMOCAP_features_raw.pkl'
         # videoIDs, videoSpeakers, videoLabels, _, _, _, videoSentence, _, _ = pickle.load(open(pkl_path, 'rb'), encoding='latin1')
 
-        # label file root path
-        label_root_path = path + '/' + self.dir_name + '/dialog/EmoEvaluation'
-        # transcription file root path
-        transcription_root_path = path + '/' + self.dir_name + '/dialog/transcriptions'
-        # wav file root path
-        audio_root_path = path + '/' + self.dir_name + '/sentences/wav'
-        # avi file root path
-        video_root_path = path + '/' + self.dir_name + '/dialog/avi/DivX'
+        file_names = listdir(self.label_root_path)
 
-        file_names = listdir(label_root_path)
-
-        for idx, f_name in enumerate(file_names):
-            label_file_path = label_root_path + '/' + f_name
+        for f_name in file_names:
+            label_file_path = self.label_root_path + '/' + f_name
             if (not os.path.isfile(label_file_path)) or (f_name.startswith('.')):
                 continue
 
+            print(f_name)
             # read label file
-            self.read_label_file(label_root_path, f_name)
+            self.read_label_file(f_name)
 
             # read transcription file
-            u_ids, u_speakers, s_times, e_times, u_texts, u_labels = self.read_transcription_file(
-                transcription_root_path, f_name)
+            u_ids, u_speakers, s_times, e_times, u_texts, u_labels = self.read_transcription_file(f_name)
 
             key_word = re.sub('.txt', '', f_name)
             utter_ids[key_word] = u_ids
@@ -301,23 +277,8 @@ class DataReader(object):
             utter_texts[key_word] = u_texts
             utter_labels[key_word] = u_labels
 
-            # test my obtains data vs data used in DialogueRNN
-            # video_labels = videoLabels[key_word]
-            # my_labels = utter_labels[key_word]
-            # if len(my_labels) != len(video_labels):
-            #     print(f_name)
-            #     print(str(count) + '-' + str(len(my_labels)) + '-' + str(len(video_labels)))
-            #     print(my_labels)
-            #     print(video_labels)
-            #     print(utter_ids[key_word])
-            #     print(videoIDs[key_word])
-            #     print(utter_speakers[key_word])
-            #     print(videoSpeakers[key_word])
-            #     print(utter_sentences[key_word])
-            #     print(videoSentence[key_word])
-
             ###  read audio file
-            # utter_audio[key_word] = self.read_audio_file(audio_root_path, f_name)
+            utter_audio[key_word] = self.read_audio_file(f_name)
 
             ### read video file
             # split the video according to the start time and end time of utterance
@@ -328,15 +289,14 @@ class DataReader(object):
             #     self.split_video_file(video_root_path, dir_name, f_name, u_id, s_time, e_time)
 
             # read the split video
-            print(f_name)
-            temp = []
-
-            for idx, u_id in enumerate(u_ids):
-                # get left and right portions of the video
-                res = self.read_video_file(self.dir_name, f_name, u_id)
-                # print(res)
-                temp.append(res)
-            utter_speaker_frames[key_word] = temp
+            # temp = []
+            #
+            # for idx, u_id in enumerate(u_ids):
+            #     # get left and right portions of the video
+            #     res = self.read_video_file(self.dir_name, f_name, u_id)
+            #     # print(res)
+            #     temp.append(res)
+            # utter_speaker_frames[key_word] = temp
 
         return utter_ids, utter_labels, utter_speakers, utter_texts, utter_audio, utter_speaker_frames
 
@@ -407,7 +367,7 @@ class DataReader(object):
             print(f_name)
             temp = []
 
-            for idx, u_id in enumerate(u_ids):
+            for u_id in u_ids:
                 # get left and right portions of the video
                 res = self.read_video_file(self.dir_name, f_name, u_id)
                 # print(res)
